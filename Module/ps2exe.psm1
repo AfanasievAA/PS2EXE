@@ -3,8 +3,9 @@
 ps2exe is a module to compile powershell scripts to executables.
 .NOTES
 Version: 1.0.18
-Date: 2026-06-06
-Author: Markus Scholtes
+Date: 2026.09.16
+Fork Author: Andrew Afanasiev
+Original author: Markus Scholtes
 #>
 
 # Load module manually for security reasons

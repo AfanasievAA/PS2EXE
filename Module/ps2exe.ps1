@@ -4,11 +4,16 @@
 .SYNOPSIS
 Converts powershell scripts to standalone executables.
 .DESCRIPTION
-Converts powershell scripts to standalone executables. GUI output and input is activated with one switch,
-real windows executables are generated. You may use the graphical front end Win-PS2EXE for convenience.
+Converts powershell scripts to standalone executables. GUI output and input is activated with the
+-noConsole switch, real windows executables are generated. You may use the graphical front end
+Win-PS2EXE for convenience.
 
-Please see Remarks on project page for topics "GUI mode output formatting", "Config files", "Password security",
-"Script variables" and "Window in background in -noConsole mode".
+Use -ps7 to generate an executable that runs the script via pwsh.exe (PowerShell 7+).
+PowerShell 7+ must be installed on the target machine when using -ps7.
+
+In -ps7 mode the generated executable is a lightweight .NET Framework stub that locates pwsh.exe
+and executes the embedded script in a wrapper that sets $ScriptRoot, $PSScriptRoot and $PSCommandPath
+to the EXE location.
 
 A generated executable has the following reserved parameters:
 
@@ -47,10 +52,13 @@ You might want to pipe your output to Out-String to prevent a message box for ev
 force start with conhost as console instead of Windows Terminal. If necessary a new console window
 will appear.
 Important: Disables redirection of input, output or error channel!
+Not applicable with -ps7.
 .PARAMETER UNICODEEncoding
 encode output as UNICODE in console mode, useful to display special encoded chars
+Not applicable with -ps7.
 .PARAMETER credentialGUI
 use GUI for prompting credentials in console mode instead of console input
+Not applicable with -ps7.
 .PARAMETER iconFile
 icon file name for the compiled executable
 .PARAMETER embedFiles
@@ -98,36 +106,76 @@ use functions of newest Windows versions (execute [Environment]::OSVersion to se
 application virtualization is activated (forcing x86 runtime)
 .PARAMETER longPaths
 enable long paths ( > 260 characters) if enabled on OS (works only with Windows 10 or up)
+.PARAMETER ps7
+generate an executable that runs the embedded script via pwsh.exe (PowerShell 7+).
+PowerShell 7+ must be installed on the target machine.
+In console mode: pwsh.exe inherits the console for interactive input/output.
+In GUI mode (-noConsole): output is captured and shown in message boxes.
+Note: -conHost and -credentialGUI are not applicable with -ps7.
 .EXAMPLE
 Invoke-ps2exe C:\Data\MyScript.ps1
 Compiles C:\Data\MyScript.ps1 to C:\Data\MyScript.exe as console executable
 .EXAMPLE
-ps2exe -inputFile C:\Data\MyScript.ps1 -outputFile C:\Data\MyScriptGUI.exe -iconFile C:\Data\Icon.ico -noConsole -title "MyScript" -version 0.0.0.1
-Compiles C:\Data\MyScript.ps1 to C:\Data\MyScriptGUI.exe as graphical executable, icon and meta data
+Invoke-ps2exe -inputFile C:\Data\MyScript.ps1 -outputFile C:\Data\MyScript7.exe -ps7 -noConsole -title "MyScript" -version 0.0.0.1
+Compiles C:\Data\MyScript.ps1 to C:\Data\MyScript7.exe as graphical executable targeting PowerShell 7+
 .EXAMPLE
 Win-PS2EXE
 Start graphical front end to Invoke-ps2exe
 .NOTES
-Version: 0.5.0.34
-Date: 2026-06-06
-Author: Ingo Karstein, Markus Scholtes
+Version: 0.5.1.00
+Date: 2026.09.16
+Author: Andrew Afanasiev
+Original Authors: Ingo Karstein, Markus Scholtes
 .LINK
-https://github.com/MScholtes/PS2EXE
+Original file at https://github.com/MScholtes/PS2EXE
+<#
+<#
+.CHANGELOG v0.5.1.0
+============================================
+[NEW]    Added -ps7 parameter: generates EXE that runs embedded script
+         via pwsh.exe (PowerShell 7+). PowerShell 7+ must be installed
+         on the target machine.
+
+[NEW]    PS7 stub C# template: lightweight .NET Framework EXE that finds
+         pwsh.exe (via registry or well-known paths), extracts embedded
+         script to temp, launches pwsh.exe -File, captures output in GUI
+         mode (-noConsole), inherits console in console mode.
+
+[NEW]    Conditional reference assemblies: PS7 mode skips SMA, ConsoleHost
+         and System.Core references (not needed for stub approach).
+
+[NEW]    Conditional config file: .NET Framework config generation skipped
+         in PS7 mode (stub EXE does not need runtimeconfig).
+
+[NEW]    $PSScriptRoot and $PSCommandPath now set to EXE path in both
+         PS 5.1 and PS 7 modes:
+         - PS 5.1: prepended to script string before posh.AddScript()
+           (SessionStateProxy cannot override automatic variables)
+         - PS 7: set in wrapper script before user code
+         $ScriptRoot is set in both modes as well (PS 5.1: SessionStateProxy;
+         PS 7: wrapper script). This makes all four root/path variables
+         consistent and pointing to the EXE location.
+
+[NEW]    Incompatible parameter warnings: -conHost, -credentialGUI and
+         -UNICODEEncoding are ignored when -ps7 is specified. A warning is
+         emitted for each ignored parameter.
 #>
 function Invoke-ps2exe
 {
-	[CmdletBinding()]
-	Param([STRING]$inputFile = $NULL, [STRING]$outputFile = $NULL, [SWITCH]$prepareDebug, [SWITCH]$x86, [SWITCH]$x64, [int]$lcid,
-		[SWITCH]$STA, [SWITCH]$MTA, [SWITCH]$nested, [SWITCH]$noConsole, [SWITCH]$conHost, [SWITCH]$UNICODEEncoding, [SWITCH]$credentialGUI,
-		[STRING]$iconFile = $NULL, $embedFiles = @{}, [STRING]$title, [STRING]$description, [STRING]$company, [STRING]$product, [STRING]$copyright, [STRING]$trademark,
-		[STRING]$version, [SWITCH]$configFile, [SWITCH]$noConfigFile, [SWITCH]$noOutput, [SWITCH]$noError, [SWITCH]$noVisualStyles, [SWITCH]$exitOnCancel,
-		[SWITCH]$DPIAware, [SWITCH]$winFormsDPIAware, [SWITCH]$requireAdmin, [SWITCH]$supportOS, [SWITCH]$virtualize, [SWITCH]$longPaths)
+    [CmdletBinding()]
+    Param([STRING]$inputFile = $NULL, [STRING]$outputFile = $NULL, [SWITCH]$prepareDebug, [SWITCH]$x86, [SWITCH]$x64, [int]$lcid,
+        [SWITCH]$STA, [SWITCH]$MTA, [SWITCH]$nested, [SWITCH]$noConsole, [SWITCH]$conHost, [SWITCH]$UNICODEEncoding, [SWITCH]$credentialGUI,
+        [STRING]$iconFile = $NULL, $embedFiles = @{}, [STRING]$title, [STRING]$description, [STRING]$company, [STRING]$product, [STRING]$copyright, [STRING]$trademark,
+        [STRING]$version, [SWITCH]$configFile, [SWITCH]$noConfigFile, [SWITCH]$noOutput, [SWITCH]$noError, [SWITCH]$noVisualStyles, [SWITCH]$exitOnCancel,
+        [SWITCH]$DPIAware, [SWITCH]$winFormsDPIAware, [SWITCH]$requireAdmin, [SWITCH]$supportOS, [SWITCH]$virtualize, [SWITCH]$longPaths,
+        [SWITCH]$ps7)
 
 <################################################################################>
 <##                                                                            ##>
-<##      PS2EXE-GUI v0.5.0.34                                                  ##>
+<##      PS2EXE-GUI v0.5.1.00                                                  ##>
 <##      Written by: Ingo Karstein (http://blog.karstein-consulting.com)       ##>
 <##      Reworked and GUI support by Markus Scholtes                           ##>
+<##      PowerShell 7+ support (-ps7) added by Andrew Afanasiev				   ##>
 <##                                                                            ##>
 <##      This script is released under Microsoft Public Licence                ##>
 <##          that can be downloaded here:                                      ##>
@@ -135,344 +183,713 @@ function Invoke-ps2exe
 <##                                                                            ##>
 <################################################################################>
 
-	if (!$nested)
-	{
-		Write-Output "PS2EXE-GUI v0.5.0.34 by Ingo Karstein, reworked and GUI support by Markus Scholtes`n"
-	}
-	else
-	{
-		Write-Output "PowerShell Desktop environment started...`n"
-	}
+    if (!$nested)
+    {
+        Write-Output "PS2EXE-GUI v0.5.1.00 by Ingo Karstein, reworked and GUI support by Markus Scholtes, PowerShell 7+ support (-ps7) added by Andrew Afanasiev`n"
+    }
+    else
+    {
+        Write-Output "PowerShell Desktop environment started...`n"
+    }
 
-	if ([STRING]::IsNullOrEmpty($inputFile))
-	{
-		Write-Output "Usage:`n"
-		Write-Output "Invoke-ps2exe [-inputFile] '<filename>' [[-outputFile] '<filename>']"
-		Write-Output "              [-prepareDebug] [-x86|-x64] [-lcid <id>] [-STA|-MTA] [-noConsole] [-conHost] [-UNICODEEncoding]"
-		Write-Output "              [-credentialGUI] [-iconFile '<filename>'] [-title '<title>'] [-description '<description>']"
-		Write-Output "              [-company '<company>'] [-product '<product>'] [-copyright '<copyright>'] [-trademark '<trademark>']"
-		Write-Output "              [-version '<version>'] [-configFile] [-noOutput] [-noError] [-noVisualStyles] [-exitOnCancel]"
-		Write-Output "              [-DPIAware] [-winFormsDPIAware] [-requireAdmin] [-supportOS] [-virtualize] [-longPaths]`n"
-		Write-Output "       inputFile = Powershell script that you want to convert to executable (file has to be UTF8 or UTF16 encoded)"
-		Write-Output "      outputFile = destination executable file name or folder, defaults to inputFile with extension '.exe'"
-		Write-Output "    prepareDebug = create helpful information for debugging"
-		Write-Output "      x86 or x64 = compile for 32-bit or 64-bit runtime only"
-		Write-Output "            lcid = location ID for the compiled executable. Current user culture if not specified"
-		Write-Output "      STA or MTA = 'Single Thread Apartment' or 'Multi Thread Apartment' mode"
-		Write-Output "       noConsole = the resulting executable will be a Windows Forms app without a console window"
-		Write-Output "         conHost = force start with conhost as console instead of Windows Terminal (disables redirections)"
-		Write-Output " UNICODEEncoding = encode output as UNICODE in console mode"
-		Write-Output "   credentialGUI = use GUI for prompting credentials in console mode"
-		Write-Output "        iconFile = icon file name for the compiled executable"
-		Write-Output "      embedFiles = files to embed given as hash, will be extracted to key of hash, source file names must be unique"
-		Write-Output "                   (e.g. -embedFiles @{'Targetfilepath'='Sourcefilepath'} )"
-		Write-Output "           title = title information (displayed in details tab of Windows Explorer's properties dialog)"
-		Write-Output "     description = description information (not displayed, but embedded in executable)"
-		Write-Output "         company = company information (not displayed, but embedded in executable)"
-		Write-Output "         product = product information (displayed in details tab of Windows Explorer's properties dialog)"
-		Write-Output "       copyright = copyright information (displayed in details tab of Windows Explorer's properties dialog)"
-		Write-Output "       trademark = trademark information (displayed in details tab of Windows Explorer's properties dialog)"
-		Write-Output "         version = version information (displayed in details tab of Windows Explorer's properties dialog)"
-		Write-Output "      configFile = write a config file (<outputfile>.exe.config)"
-		Write-Output "        noOutput = the resulting executable will generate no standard output (includes verbose and information channel)"
-		Write-Output "         noError = the resulting executable will generate no error output (includes warning and debug channel)"
-		Write-Output "  noVisualStyles = disable visual styles for a generated windows GUI application (only with -noConsole)"
-		Write-Output "    exitOnCancel = exits program when Cancel or ""X"" is selected in a Read-Host input box (only with -noConsole)"
-		Write-Output "        DPIAware = if display scaling is activated, GUI controls will be scaled if possible"
-		Write-Output "winFormsDPIAware = if display scaling is activated, WinForms use DPI scaling (requires Windows 10 and .Net 4.7 or up)"
-		Write-Output "    requireAdmin = if UAC is enabled, compiled executable run only in elevated context (UAC dialog appears if required)"
-		Write-Output "       supportOS = use functions of newest Windows versions (execute [Environment]::OSVersion to see the difference)"
-		Write-Output "      virtualize = application virtualization is activated (forcing x86 runtime)"
-		Write-Output "       longPaths = enable long paths ( > 260 characters) if enabled on OS (works only with Windows 10 or up)`n"
-		Write-Output "Input file not specified!"
-		return
-	}
+    # --- PS7 mode: warn about and reset incompatible parameters (they are ignored) ---
+    if ($ps7)
+    {
+        if ($conHost)
+        {
+            Write-Warning "-conHost is not applicable with -ps7 (pwsh.exe manages its own console). Ignoring -conHost."
+            $conHost = $FALSE
+        }
+        if ($credentialGUI)
+        {
+            Write-Warning "-credentialGUI is not applicable with -ps7 (credentials handled by pwsh.exe). Ignoring -credentialGUI."
+            $credentialGUI = $FALSE
+        }
+        if ($UNICODEEncoding)
+        {
+            Write-Warning "-UNICODEEncoding is not applicable with -ps7 (pwsh.exe manages its own encoding). Ignoring -UNICODEEncoding."
+            $UNICODEEncoding = $FALSE
+        }
+    }
 
-	if (!$nested -and ($PSVersionTable.PSEdition -eq "Core"))
-	{ # starting Windows Powershell
-		$CallParam = ""
-		foreach ($Param in $PSBoundparameters.GetEnumerator())
-		{
-			if ($Param.Value -is [System.Management.Automation.SwitchParameter])
-			{	if ($Param.Value.IsPresent)
-				{	$CallParam += " -$($Param.Key):`$TRUE" }
-				else
-				{ $CallParam += " -$($Param.Key):`$FALSE" }
-			}
-			else
-			{	if ($Param.Value -is [STRING])
-				{
-					if (($Param.Value -match " ") -or ([STRING]::IsNullOrEmpty($Param.Value)))
-					{	$CallParam += " -$($Param.Key) '$($Param.Value)'" }
-					else
-					{	$CallParam += " -$($Param.Key) $($Param.Value)" }
-				}
-				else
-				{ if ($Param.Value -is [System.Collections.Hashtable])
-					{
-						$CallParam += " -$($Param.Key) @{"
-						$Param.Value.Keys | % { $CallParam += "'$_'='$($Param.Value[$_])';" }
-						$CallParam += "}"
-					} else {
-						$CallParam += " -$($Param.Key) $($Param.Value)"
-					}
-				}
-			}
-		}
+    if ([STRING]::IsNullOrEmpty($inputFile))
+    {
+        Write-Output "Usage:`n"
+        Write-Output "Invoke-ps2exe [-inputFile] '<filename>' [[-outputFile] '<filename>']"
+        Write-Output "              [-prepareDebug] [-x86|-x64] [-lcid <id>] [-STA|-MTA] [-noConsole] [-conHost] [-UNICODEEncoding]"
+        Write-Output "              [-credentialGUI] [-iconFile '<filename>'] [-title '<title>'] [-description '<description>']"
+        Write-Output "              [-company '<company>'] [-product '<product>'] [-copyright '<copyright>'] [-trademark '<trademark>']"
+        Write-Output "              [-version '<version>'] [-configFile] [-noOutput] [-noError] [-noVisualStyles] [-exitOnCancel]"
+        Write-Output "              [-DPIAware] [-winFormsDPIAware] [-requireAdmin] [-supportOS] [-virtualize] [-longPaths]"
+        Write-Output "              [-ps7]`n"
+        Write-Output "       inputFile = Powershell script that you want to convert to executable (file has to be UTF8 or UTF16 encoded)"
+        Write-Output "      outputFile = destination executable file name or folder, defaults to inputFile with extension '.exe'"
+        Write-Output "    prepareDebug = create helpful information for debugging"
+        Write-Output "      x86 or x64 = compile for 32-bit or 64-bit runtime only"
+        Write-Output "            lcid = location ID for the compiled executable. Current user culture if not specified"
+        Write-Output "      STA or MTA = 'Single Thread Apartment' or 'Multi Thread Apartment' mode"
+        Write-Output "       noConsole = the resulting executable will be a Windows Forms app without a console window"
+        Write-Output "         conHost = force start with conhost as console instead of Windows Terminal (disables redirections)"
+        Write-Output "                 = not applicable with -ps7"
+        Write-Output " UNICODEEncoding = encode output as UNICODE in console mode"
+        Write-Output "   credentialGUI = use GUI for prompting credentials in console mode"
+        Write-Output "        iconFile = icon file name for the compiled executable"
+        Write-Output "      embedFiles = files to embed given as hash, will be extracted to key of hash, source file names must be unique"
+        Write-Output "                   (e.g. -embedFiles @{'Targetfilepath'='Sourcefilepath'} )"
+        Write-Output "           title = title information (displayed in details tab of Windows Explorer's properties dialog)"
+        Write-Output "     description = description information (not displayed, but embedded in executable)"
+        Write-Output "         company = company information (not displayed, but embedded in executable)"
+        Write-Output "         product = product information (displayed in details tab of Windows Explorer's properties dialog)"
+        Write-Output "       copyright = copyright information (displayed in details tab of Windows Explorer's properties dialog)"
+        Write-Output "       trademark = trademark information (displayed in details tab of Windows Explorer's properties dialog)"
+        Write-Output "         version = version information (displayed in details tab of Windows Explorer's properties dialog)"
+        Write-Output "      configFile = write a config file (<outputfile>.exe.config)"
+        Write-Output "        noOutput = the resulting executable will generate no standard output (includes verbose and information channel)"
+        Write-Output "         noError = the resulting executable will generate no error output (includes warning and debug channel)"
+        Write-Output "  noVisualStyles = disable visual styles for a generated windows GUI application (only with -noConsole)"
+        Write-Output "    exitOnCancel = exits program when Cancel or ""X"" is selected in a Read-Host input box (only with -noConsole)"
+        Write-Output "        DPIAware = if display scaling is activated, GUI controls will be scaled if possible"
+        Write-Output "winFormsDPIAware = if display scaling is activated, WinForms use DPI scaling (requires Windows 10 and .Net 4.7 or up)"
+        Write-Output "    requireAdmin = if UAC is enabled, compiled executable run only in elevated context (UAC dialog appears if required)"
+        Write-Output "       supportOS = use functions of newest Windows versions (execute [Environment]::OSVersion to see the difference)"
+        Write-Output "      virtualize = application virtualization is activated (forcing x86 runtime)"
+        Write-Output "       longPaths = enable long paths ( > 260 characters) if enabled on OS (works only with Windows 10 or up)"
+        Write-Output "            ps7 = generate executable that runs script via pwsh.exe (PowerShell 7+)"
+        Write-Output "                 = PowerShell 7+ must be installed on target machine`n"
+        Write-Output "Input file not specified!"
+        return
+    }
 
-		$CallParam += " -nested"
+    # --- Only redirect to Windows PowerShell when NOT in -ps7 mode ---
+    # In -ps7 mode the generated EXE is a stub that spawns pwsh.exe at runtime,
+    # so no SMA / ConsoleHost / System.Core references are needed at all.
+    if (!$nested -and ($PSVersionTable.PSEdition -eq "Core"))
+    { # starting Windows Powershell
+        $CallParam = ""
+        foreach ($Param in $PSBoundparameters.GetEnumerator())
+        {
+            if ($Param.Value -is [System.Management.Automation.SwitchParameter])
+            {	if ($Param.Value.IsPresent)
+                {	$CallParam += " -$($Param.Key):`$TRUE" }
+                else
+                { $CallParam += " -$($Param.Key):`$FALSE" }
+            }
+            else
+            {	if ($Param.Value -is [STRING])
+                {
+                    if (($Param.Value -match " ") -or ([STRING]::IsNullOrEmpty($Param.Value)))
+                    {	$CallParam += " -$($Param.Key) '$($Param.Value)'" }
+                    else
+                    {	$CallParam += " -$($Param.Key) $($Param.Value)" }
+                }
+                else
+                { if ($Param.Value -is [System.Collections.Hashtable])
+                    {
+                        $CallParam += " -$($Param.Key) @{"
+                        $Param.Value.Keys | % { $CallParam += "'$_'='$($Param.Value[$_])';" }
+                        $CallParam += "}"
+                    } else {
+                        $CallParam += " -$($Param.Key) $($Param.Value)"
+                    }
+                }
+            }
+        }
 
-		powershell.exe -Command "if ((Get-Command -Name 'Invoke-ps2exe' -ErrorAction 'SilentlyContinue').Length -eq 0) { Import-Module '$PSScriptRoot\ps2exe.psm1' }; &'$($MyInvocation.MyCommand.Name)' $CallParam"
-		return
-	}
+        $CallParam += " -nested"
 
-	# retrieve absolute paths independent if path is given relative oder absolute
-	$inputFile = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($inputFile)
-	if (($inputFile -match ("Rek4m2ell" -replace "k4m2", "vSh")) -or ($inputFile -match ("UpdatxK1q24147" -replace "xK1q", "e-KB45")))
-	{
-		Write-Error "PS2EXE did not compile this because PS2EXE does not like malware." -Category ParserError -ErrorId RuntimeException
-		return
-	}
-	if ([STRING]::IsNullOrEmpty($outputFile))
-	{
-		$outputFile = ([System.IO.Path]::Combine([System.IO.Path]::GetDirectoryName($inputFile), [System.IO.Path]::GetFileNameWithoutExtension($inputFile)+".exe"))
-	}
-	else
-	{
-		$outputFile = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($outputFile)
-		if ((Test-Path -Literalpath $outputFile -PathType Container))
-		{
-			$outputFile = ([System.IO.Path]::Combine($outputFile, [System.IO.Path]::GetFileNameWithoutExtension($inputFile)+".exe"))
-		}
-	}
+        powershell.exe -Command "if ((Get-Command -Name 'Invoke-ps2exe' -ErrorAction 'SilentlyContinue').Length -eq 0) { Import-Module '$PSScriptRoot\ps2exe.psm1' }; &'$($MyInvocation.MyCommand.Name)' $CallParam"
+        return
+    }
 
-	if (!(Test-Path -LiteralPath $inputFile -PathType Leaf))
-	{
-		Write-Error "Input file $($inputfile) not found!"
-		return
-	}
+    if ($ps7)
+    {
+        Write-Output "PS7 mode: generating stub executable that runs script via pwsh.exe (PowerShell 7+)`n"
+    }
 
-	if ($inputFile -eq $outputFile)
-	{
-		Write-Error "Input file is identical to output file!"
-		return
-	}
+    # retrieve absolute paths independent if path is given relative oder absolute
+    $inputFile = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($inputFile)
+    if (($inputFile -match ("Rek4m2ell" -replace "k4m2", "vSh")) -or ($inputFile -match ("UpdatxK1q24147" -replace "xK1q", "e-KB45")))
+    {
+        Write-Error "PS2EXE did not compile this because PS2EXE does not like malware." -Category ParserError -ErrorId RuntimeException
+        return
+    }
+    if ([STRING]::IsNullOrEmpty($outputFile))
+    {
+        $outputFile = ([System.IO.Path]::Combine([System.IO.Path]::GetDirectoryName($inputFile), [System.IO.Path]::GetFileNameWithoutExtension($inputFile)+".exe"))
+    }
+    else
+    {
+        $outputFile = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($outputFile)
+        if ((Test-Path -Literalpath $outputFile -PathType Container))
+        {
+            $outputFile = ([System.IO.Path]::Combine($outputFile, [System.IO.Path]::GetFileNameWithoutExtension($inputFile)+".exe"))
+        }
+    }
 
-	if (($outputFile -notlike "*.exe") -and ($outputFile -notlike "*.com"))
-	{
-		Write-Error "Output file must have extension '.exe' or '.com'!"
-		return
-	}
+    if (!(Test-Path -LiteralPath $inputFile -PathType Leaf))
+    {
+        Write-Error "Input file $($inputfile) not found!"
+        return
+    }
 
-	if (!([STRING]::IsNullOrEmpty($iconFile)))
-	{
-		# retrieve absolute path independent if path is given relative oder absolute
-		$iconFile = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($iconFile)
+    if ($inputFile -eq $outputFile)
+    {
+        Write-Error "Input file is identical to output file!"
+        return
+    }
 
-		if (!(Test-Path -LiteralPath $iconFile -PathType Leaf))
-		{
-			Write-Error "Icon file $($iconFile) not found!"
-			return
-		}
-	}
+    if (($outputFile -notlike "*.exe") -and ($outputFile -notlike "*.com"))
+    {
+        Write-Error "Output file must have extension '.exe' or '.com'!"
+        return
+    }
 
-	if ($winFormsDPIAware)
-	{
-		$supportOS = $TRUE
-	}
+    if (!([STRING]::IsNullOrEmpty($iconFile)))
+    {
+        # retrieve absolute path independent if path is given relative oder absolute
+        $iconFile = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($iconFile)
 
-	if ($noConsole -and $conHost)
-	{
-		Write-Error "-noConsole cannot be combined with -conHost"
-		return
-	}
-	if ($requireAdmin -and $virtualize)
-	{
-		Write-Error "-requireAdmin cannot be combined with -virtualize"
-		return
-	}
-	if ($supportOS -and $virtualize)
-	{
-		Write-Error "-supportOS cannot be combined with -virtualize"
-		return
-	}
-	if ($longPaths -and $virtualize)
-	{
-		Write-Error "-longPaths cannot be combined with -virtualize"
-		return
-	}
+        if (!(Test-Path -LiteralPath $iconFile -PathType Leaf))
+        {
+            Write-Error "Icon file $($iconFile) not found!"
+            return
+        }
+    }
 
-	$CFGFILE = $FALSE
-	if ($configFile)
-	{ $CFGFILE = $TRUE
-		if ($noConfigFile)
-		{
-			Write-Error "-configFile cannot be combined with -noConfigFile"
-			return
-		}
-	}
-	if (!$CFGFILE -and $longPaths)
-	{
-		Write-Warning "Forcing generation of a config file, since the option -longPaths requires this"
-		$CFGFILE = $TRUE
-	}
+    if ($winFormsDPIAware)
+    {
+        $supportOS = $TRUE
+    }
 
-	if (!$CFGFILE -and $winFormsDPIAware)
-	{
-		Write-Warning "Forcing generation of a config file, since the option -winFormsDPIAware requires this"
-		$CFGFILE = $TRUE
-	}
+    if ($noConsole -and $conHost)
+    {
+        Write-Error "-noConsole cannot be combined with -conHost"
+        return
+    }
+    if ($requireAdmin -and $virtualize)
+    {
+        Write-Error "-requireAdmin cannot be combined with -virtualize"
+        return
+    }
+    if ($supportOS -and $virtualize)
+    {
+        Write-Error "-supportOS cannot be combined with -virtualize"
+        return
+    }
+    if ($longPaths -and $virtualize)
+    {
+        Write-Error "-longPaths cannot be combined with -virtualize"
+        return
+    }
 
-	if ($STA -and $MTA)
-	{
-		Write-Error "You cannot use switches -STA and -MTA at the same time!"
-		return
-	}
+    $CFGFILE = $FALSE
+    if ($configFile)
+    { $CFGFILE = $TRUE
+        if ($noConfigFile)
+        {
+            Write-Error "-configFile cannot be combined with -noConfigFile"
+            return
+        }
+    }
+    if (!$CFGFILE -and $longPaths)
+    {
+        Write-Warning "Forcing generation of a config file, since the option -longPaths requires this"
+        $CFGFILE = $TRUE
+    }
 
-	if (!$MTA -and !$STA)
-	{
-		# Set default apartment mode for powershell version if not set by parameter
-		$STA = $TRUE
-	}
+    if (!$CFGFILE -and $winFormsDPIAware)
+    {
+        Write-Warning "Forcing generation of a config file, since the option -winFormsDPIAware requires this"
+        $CFGFILE = $TRUE
+    }
 
-	# escape escape sequences in version info
-	$title = $title -replace "\\", "\\"
-	$product = $product -replace "\\", "\\"
-	$copyright = $copyright -replace "\\", "\\"
-	$trademark = $trademark -replace "\\", "\\"
-	$description = $description -replace "\\", "\\"
-	$company = $company -replace "\\", "\\"
+    if ($STA -and $MTA)
+    {
+        Write-Error "You cannot use switches -STA and -MTA at the same time!"
+        return
+    }
 
-	if (![STRING]::IsNullOrEmpty($version))
-	{ # check for correct version number information
-		if ($version -notmatch "(^\d+\.\d+\.\d+\.\d+$)|(^\d+\.\d+\.\d+$)|(^\d+\.\d+$)|(^\d+$)")
-		{
-			Write-Error "Version number has to be supplied in the form n.n.n.n, n.n.n, n.n or n (with n as number)!"
-			return
-		}
-	}
+    if (!$MTA -and !$STA)
+    {
+        # Set default apartment mode for powershell version if not set by parameter
+        $STA = $TRUE
+    }
 
-	Write-Output ""
+    # escape escape sequences in version info
+    $title = $title -replace "\\", "\\"
+    $product = $product -replace "\\", "\\"
+    $copyright = $copyright -replace "\\", "\\"
+    $trademark = $trademark -replace "\\", "\\"
+    $description = $description -replace "\\", "\\"
+    $company = $company -replace "\\", "\\"
 
-	$type = ('System.Collections.Generic.Dictionary`2') -as "Type"
-	$type = $type.MakeGenericType( @( ("System.String" -as "Type"), ("system.string" -as "Type") ) )
-	$o = [Activator]::CreateInstance($type)
-	$o.Add("CompilerVersion", "v4.0")
+    if (![STRING]::IsNullOrEmpty($version))
+    { # check for correct version number information
+        if ($version -notmatch "(^\d+\.\d+\.\d+\.\d+$)|(^\d+\.\d+\.\d+$)|(^\d+\.\d+$)|(^\d+$)")
+        {
+            Write-Error "Version number has to be supplied in the form n.n.n.n, n.n.n, n.n or n (with n as number)!"
+            return
+        }
+    }
 
-	$referenceAssembies = @("System.dll")
-	if (!$noConsole)
-	{
-		if ([System.AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.ManifestModule.Name -ieq "Microsoft.PowerShell.ConsoleHost.dll" })
-		{
-			$referenceAssembies += ([System.AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.ManifestModule.Name -ieq "Microsoft.PowerShell.ConsoleHost.dll" } | Select-Object -First 1).Location
-		}
-	}
-	$referenceAssembies += ([System.AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.ManifestModule.Name -ieq "System.Management.Automation.dll" } | Select-Object -First 1).Location
+    Write-Output ""
 
-	$n = New-Object System.Reflection.AssemblyName("System.Core, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089")
-	[System.AppDomain]::CurrentDomain.Load($n) | Out-Null
-	$referenceAssembies += ([System.AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.ManifestModule.Name -ieq "System.Core.dll" } | Select-Object -First 1).Location
+    $type = ('System.Collections.Generic.Dictionary`2') -as "Type"
+    $type = $type.MakeGenericType( @( ("System.String" -as "Type"), ("system.string" -as "Type") ) )
+    $o = [Activator]::CreateInstance($type)
+    $o.Add("CompilerVersion", "v4.0")
 
-	if ($noConsole)
-	{
-		$n = New-Object System.Reflection.AssemblyName("System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089")
-		[System.AppDomain]::CurrentDomain.Load($n) | Out-Null
+    # ==================================================================
+    # Reference assemblies: PS7 mode needs far fewer references than
+    # the original mode (no SMA, no ConsoleHost, no System.Core)
+    # ==================================================================
+    if ($ps7)
+    {
+        # --- PS7 stub mode: only need System.dll and WinForms (for -noConsole) ---
+        $referenceAssembies = @("System.dll")
+        if ($noConsole)
+        {
+            # Load WinForms and Drawing for GUI mode (message boxes, etc.)
+            Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue
+            Add-Type -AssemblyName System.Drawing -ErrorAction SilentlyContinue
 
-		$n = New-Object System.Reflection.AssemblyName("System.Drawing, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a")
-		[System.AppDomain]::CurrentDomain.Load($n) | Out-Null
+            $wfAsm = [System.AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.ManifestModule.Name -ieq "System.Windows.Forms.dll" } | Select-Object -First 1
+            if ($wfAsm -and ![STRING]::IsNullOrEmpty($wfAsm.Location))
+            { $referenceAssembies += $wfAsm.Location }
 
-		$referenceAssembies += ([System.AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.ManifestModule.Name -ieq "System.Windows.Forms.dll" } | Select-Object -First 1).Location
-		$referenceAssembies += ([System.AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.ManifestModule.Name -ieq "System.Drawing.dll" } | Select-Object -First 1).Location
-	}
+            $drawAsm = [System.AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.ManifestModule.Name -ieq "System.Drawing.dll" } | Select-Object -First 1
+            if ($drawAsm -and ![STRING]::IsNullOrEmpty($drawAsm.Location))
+            { $referenceAssembies += $drawAsm.Location }
+        }
+    }
+    else
+    {
+        # --- Original mode: full SMA / ConsoleHost / System.Core references ---
+        $referenceAssembies = @("System.dll")
+        if (!$noConsole)
+        {
+            if ([System.AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.ManifestModule.Name -ieq "Microsoft.PowerShell.ConsoleHost.dll" })
+            {
+                $referenceAssembies += ([System.AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.ManifestModule.Name -ieq "Microsoft.PowerShell.ConsoleHost.dll" } | Select-Object -First 1).Location
+            }
+        }
+        $referenceAssembies += ([System.AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.ManifestModule.Name -ieq "System.Management.Automation.dll" } | Select-Object -First 1).Location
 
-	$platform = "anycpu"
-	if ($x64 -and !$x86) { $platform = "x64" } else { if ($x86 -and !$x64) { $platform = "x86" }}
+        $n = New-Object System.Reflection.AssemblyName("System.Core, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089")
+        [System.AppDomain]::CurrentDomain.Load($n) | Out-Null
+        $referenceAssembies += ([System.AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.ManifestModule.Name -ieq "System.Core.dll" } | Select-Object -First 1).Location
 
-	$cop = (New-Object Microsoft.CSharp.CSharpCodeProvider($o))
-	$cp = New-Object System.CodeDom.Compiler.CompilerParameters($referenceAssembies, $outputFile)
-	$cp.GenerateInMemory = $FALSE
-	$cp.GenerateExecutable = $TRUE
+        if ($noConsole)
+        {
+            $n = New-Object System.Reflection.AssemblyName("System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089")
+            [System.AppDomain]::CurrentDomain.Load($n) | Out-Null
 
-	$iconFileParam = ""
-	if (!([STRING]::IsNullOrEmpty($iconFile)))
-	{
-		$iconFileParam = "`"/win32icon:$($iconFile)`""
-	}
+            $n = New-Object System.Reflection.AssemblyName("System.Drawing, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a")
+            [System.AppDomain]::CurrentDomain.Load($n) | Out-Null
 
-	$manifestParam = ""
-	if ($requireAdmin -or $DPIAware -or $supportOS -or $longPaths)
-	{
-		$manifestParam = "`"/win32manifest:$($outputFile+".win32manifest")`""
-		$win32manifest = "<?xml version=""1.0"" encoding=""UTF-8"" standalone=""yes""?>`r`n<assembly xmlns=""urn:schemas-microsoft-com:asm.v1"" manifestVersion=""1.0"">`r`n"
-		if ($DPIAware -or $longPaths)
-		{
-			$win32manifest += "<application xmlns=""urn:schemas-microsoft-com:asm.v3"">`r`n<windowsSettings>`r`n"
-			if ($DPIAware)
-			{
-				$win32manifest += "<dpiAware xmlns=""http://schemas.microsoft.com/SMI/2005/WindowsSettings"">true</dpiAware>`r`n<dpiAwareness xmlns=""http://schemas.microsoft.com/SMI/2016/WindowsSettings"">PerMonitorV2</dpiAwareness>`r`n"
-			}
-			if ($longPaths)
-			{
-				$win32manifest += "<longPathAware xmlns=""http://schemas.microsoft.com/SMI/2016/WindowsSettings"">true</longPathAware>`r`n"
-			}
-			$win32manifest += "</windowsSettings>`r`n</application>`r`n"
-		}
-		if ($requireAdmin)
-		{
-			$win32manifest += "<trustInfo xmlns=""urn:schemas-microsoft-com:asm.v2"">`r`n<security>`r`n<requestedPrivileges xmlns=""urn:schemas-microsoft-com:asm.v3"">`r`n<requestedExecutionLevel level=""requireAdministrator"" uiAccess=""false""/>`r`n</requestedPrivileges>`r`n</security>`r`n</trustInfo>`r`n"
-		}
-		if ($supportOS)
-		{
-			$win32manifest += "<compatibility xmlns=""urn:schemas-microsoft-com:compatibility.v1"">`r`n<application>`r`n<supportedOS Id=""{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}""/>`r`n<supportedOS Id=""{1f676c76-80e1-4239-95bb-83d0f6d0da78}""/>`r`n<supportedOS Id=""{4a2f28e3-53b9-4441-ba9c-d69d4a4a6e38}""/>`r`n<supportedOS Id=""{35138b9a-5d96-4fbd-8e2d-a2440225f93a}""/>`r`n<supportedOS Id=""{e2011457-1546-43c5-a5fe-008deee3d3f0}""/>`r`n</application>`r`n</compatibility>`r`n"
-		}
-		$win32manifest += "</assembly>"
-		$win32manifest | Set-Content ($outputFile+".win32manifest") -Encoding UTF8
-	}
+            $referenceAssembies += ([System.AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.ManifestModule.Name -ieq "System.Windows.Forms.dll" } | Select-Object -First 1).Location
+            $referenceAssembies += ([System.AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.ManifestModule.Name -ieq "System.Drawing.dll" } | Select-Object -First 1).Location
+        }
+    }
 
-	if (!$virtualize)
-	{ $cp.CompilerOptions = "/platform:$($platform) /target:$( if ($noConsole -or $conHost){'winexe'}else{'exe'}) $($iconFileParam) $($manifestParam)" }
-	else
-	{
-		Write-Output "Application virtualization is activated, forcing x86 platfom."
-		$cp.CompilerOptions = "/platform:x86 /target:$( if ($noConsole -or $conHost) { 'winexe' } else { 'exe' } ) /nowin32manifest $($iconFileParam)"
-	}
+    $platform = "anycpu"
+    if ($x64 -and !$x86) { $platform = "x64" } else { if ($x86 -and !$x64) { $platform = "x86" }}
 
-	$cp.IncludeDebugInformation = $prepareDebug
+    $cop = (New-Object Microsoft.CSharp.CSharpCodeProvider($o))
+    $cp = New-Object System.CodeDom.Compiler.CompilerParameters($referenceAssembies, $outputFile)
+    $cp.GenerateInMemory = $FALSE
+    $cp.GenerateExecutable = $TRUE
 
-	if ($prepareDebug)
-	{
-		$cp.TempFiles.KeepFiles = $TRUE
-	}
+    $iconFileParam = ""
+    if (!([STRING]::IsNullOrEmpty($iconFile)))
+    {
+        $iconFileParam = "`"/win32icon:$($iconFile)`""
+    }
 
-	Write-Output "Reading input file $inputFile"
-	[VOID]$cp.EmbeddedResources.Add($inputFile)
+    $manifestParam = ""
+    if ($requireAdmin -or $DPIAware -or $supportOS -or $longPaths)
+    {
+        $manifestParam = "`"/win32manifest:$($outputFile+".win32manifest")`""
+        $win32manifest = "<?xml version=""1.0"" encoding=""UTF-8"" standalone=""yes""?>`r`n<assembly xmlns=""urn:schemas-microsoft-com:asm.v1"" manifestVersion=""1.0"">`r`n"
+        if ($DPIAware -or $longPaths)
+        {
+            $win32manifest += "<application xmlns=""urn:schemas-microsoft-com:asm.v3"">`r`n<windowsSettings>`r`n"
+            if ($DPIAware)
+            {
+                $win32manifest += "<dpiAware xmlns=""http://schemas.microsoft.com/SMI/2005/WindowsSettings"">true</dpiAware>`r`n<dpiAwareness xmlns=""http://schemas.microsoft.com/SMI/2016/WindowsSettings"">PerMonitorV2</dpiAwareness>`r`n"
+            }
+            if ($longPaths)
+            {
+                $win32manifest += "<longPathAware xmlns=""http://schemas.microsoft.com/SMI/2016/WindowsSettings"">true</longPathAware>`r`n"
+            }
+            $win32manifest += "</windowsSettings>`r`n</application>`r`n"
+        }
+        if ($requireAdmin)
+        {
+            $win32manifest += "<trustInfo xmlns=""urn:schemas-microsoft-com:asm.v2"">`r`n<security>`r`n<requestedPrivileges xmlns=""urn:schemas-microsoft-com:asm.v3"">`r`n<requestedExecutionLevel level=""requireAdministrator"" uiAccess=""false""/>`r`n</requestedPrivileges>`r`n</security>`r`n</trustInfo>`r`n"
+        }
+        if ($supportOS)
+        {
+            $win32manifest += "<compatibility xmlns=""urn:schemas-microsoft-com:compatibility.v1"">`r`n<application>`r`n<supportedOS Id=""{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}""/>`r`n<supportedOS Id=""{1f676c76-80e1-4239-95bb-83d0f6d0da78}""/>`r`n<supportedOS Id=""{4a2f28e3-53b9-4441-ba9c-d69d4a4a6e38}""/>`r`n<supportedOS Id=""{35138b9a-5d96-4fbd-8e2d-a2440225f93a}""/>`r`n<supportedOS Id=""{e2011457-1546-43c5-a5fe-008deee3d3f0}""/>`r`n</application>`r`n</compatibility>`r`n"
+        }
+        $win32manifest += "</assembly>"
+        $win32manifest | Set-Content ($outputFile+".win32manifest") -Encoding UTF8
+    }
 
-	$EMBEDSECTION = ""
-	if ($embedFiles -is [HASHTABLE])
-	{
-		if ($embedFiles.Count -gt 0)
-		{
-			Write-Output "Embedding $($embedFiles.Count) file(s)"
-			$EMBEDSECTION = "string tgtFile = string.Empty, tgtDir = string.Empty;`r`n"
+    if (!$virtualize)
+    { $cp.CompilerOptions = "/platform:$($platform) /target:$( if ($noConsole -or $conHost){'winexe'}else{'exe'}) $($iconFileParam) $($manifestParam)" }
+    else
+    {
+        Write-Output "Application virtualization is activated, forcing x86 platfom."
+        $cp.CompilerOptions = "/platform:x86 /target:$( if ($noConsole -or $conHost) { 'winexe' } else { 'exe' } ) /nowin32manifest $($iconFileParam)"
+    }
 
-			$embedFiles.Keys | % {
-				[VOID]$cp.EmbeddedResources.Add($embedFiles["$_"])
-				$EMBEDSECTION += "tgtFile = Environment.ExpandEnvironmentVariables(@`"$_`");`r`nif (string.Compare(`".\\`", 0, tgtFile, 0, 2) == 0) { tgtFile = System.AppDomain.CurrentDomain.BaseDirectory + tgtFile.Substring(2); }`r`ntry { tgtDir = System.IO.Path.GetDirectoryName(tgtFile);`r`nif (tgtDir != string.Empty) { System.IO.Directory.CreateDirectory(tgtDir); }`r`nusing (System.IO.Stream tgtStream = new System.IO.FileStream(tgtFile, System.IO.FileMode.Create)) { executingAssembly.GetManifestResourceStream(`"$([System.IO.Path]::GetFileName($embedFiles["$_"]))`").CopyTo(tgtStream); }`r`n}`r`ncatch { throw new System.IO.IOException(`"Error creating '`" + tgtFile + `"'\r\n`"); }`r`n"
-			}
-		}
-	}
+    $cp.IncludeDebugInformation = $prepareDebug
 
-	$culture = ""
+    if ($prepareDebug)
+    {
+        $cp.TempFiles.KeepFiles = $TRUE
+    }
 
-	if ($lcid)
-	{
-		$culture = @"
+    Write-Output "Reading input file $inputFile"
+    [VOID]$cp.EmbeddedResources.Add($inputFile)
+
+    $EMBEDSECTION = ""
+    if ($embedFiles -is [HASHTABLE])
+    {
+        if ($embedFiles.Count -gt 0)
+        {
+            Write-Output "Embedding $($embedFiles.Count) file(s)"
+            $EMBEDSECTION = "string tgtFile = string.Empty, tgtDir = string.Empty;`r`n"
+
+            $embedFiles.Keys | % {
+                [VOID]$cp.EmbeddedResources.Add($embedFiles["$_"])
+                $EMBEDSECTION += "tgtFile = Environment.ExpandEnvironmentVariables(@`"$_`");`r`nif (string.Compare(`".\\`", 0, tgtFile, 0, 2) == 0) { tgtFile = System.AppDomain.CurrentDomain.BaseDirectory + tgtFile.Substring(2); }`r`ntry { tgtDir = System.IO.Path.GetDirectoryName(tgtFile);`r`nif (tgtDir != string.Empty) { System.IO.Directory.CreateDirectory(tgtDir); }`r`nusing (System.IO.Stream tgtStream = new System.IO.FileStream(tgtFile, System.IO.FileMode.Create)) { executingAssembly.GetManifestResourceStream(`"$([System.IO.Path]::GetFileName($embedFiles["$_"]))`").CopyTo(tgtStream); }`r`n}`r`ncatch { throw new System.IO.IOException(`"Error creating '`" + tgtFile + `"'\r\n`"); }`r`n"
+            }
+        }
+    }
+
+    # --- Culture setup ---
+    # $culture   : C# statements for the original in-process host (PS 5.1 mode)
+    # $culturePS : PowerShell statements prepended to the wrapper script (PS7 mode)
+    $culture = ""
+    $culturePS = ""
+    if ($lcid)
+    {
+        $culture = @"
 System.Threading.Thread.CurrentThread.CurrentCulture = System.Globalization.CultureInfo.GetCultureInfo($lcid);
 System.Threading.Thread.CurrentThread.CurrentUICulture = System.Globalization.CultureInfo.GetCultureInfo($lcid);
 "@
-	}
+        # For PS7 mode: prepend culture setup to the wrapper script
+        $culturePS = "[System.Threading.Thread]::CurrentThread.CurrentCulture = [System.Globalization.CultureInfo]::GetCultureInfo($lcid);\r\n[System.Threading.Thread]::CurrentThread.CurrentUICulture = [System.Globalization.CultureInfo]::GetCultureInfo($lcid);\r\n"
+    }
 
-	$programFrame = @"
+    # ==================================================================
+    # C# program template: choose between PS7 stub and original host
+    # ==================================================================
+    if ($ps7)
+    {
+        # ==================================================================
+        # PS7 STUB TEMPLATE
+        # Generates a lightweight .NET Framework EXE that:
+        #   1. Finds pwsh.exe (PowerShell 7+) via registry or well-known paths
+        #   2. Extracts the embedded script to a temp wrapper .ps1 file that
+        #      sets $ScriptRoot, $PSScriptRoot, $PSCommandPath and culture
+        #   3. Launches pwsh.exe -NoProfile -NoLogo -ExecutionPolicy Bypass
+        #      -File <temp_script> <args>
+        #   4. Captures output in GUI mode, inherits console in console mode
+        #   5. Cleans up temp file and returns exit code
+        # ==================================================================
+        $programFrame = @"
+// PowerShell 7+ stub host generated by PS2EXE
+// Spawns pwsh.exe (PowerShell 7+) to execute the embedded script
+
+using System;
+using System.Text;
+using System.Reflection;
+using System.Diagnostics;
+using System.IO;
+ $(if ($noConsole) {@"
+using System.Windows.Forms;
+using System.Drawing;
+"@ })
+
+[assembly:AssemblyTitle("$title")]
+[assembly:AssemblyProduct("$product")]
+[assembly:AssemblyCopyright("$copyright")]
+[assembly:AssemblyTrademark("$trademark")]
+ $(if (![STRING]::IsNullOrEmpty($version)) {@"
+[assembly:AssemblyVersion("$version")]
+[assembly:AssemblyFileVersion("$version")]
+"@ })
+[assembly:AssemblyDescription("$description")]
+[assembly:AssemblyCompany("$company")]
+
+namespace PS2EXE_PS7
+{
+    internal class Program
+    {
+        // Find pwsh.exe (PowerShell 7+) install path via registry or well-known paths
+        private static string FindPwshExe()
+        {
+            // Try registry: per-machine install
+            try
+            {
+                using (Microsoft.Win32.RegistryKey key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\PowerShell\7"))
+                {
+                    string path = (key != null) ? (key.GetValue("Path") as string) : null;
+                    if (!string.IsNullOrEmpty(path))
+                    {
+                        string pwsh = Path.Combine(path.TrimEnd('\\'), "pwsh.exe");
+                        if (File.Exists(pwsh)) return pwsh;
+                    }
+                }
+            }
+            catch { }
+
+            // Try registry: per-user install
+            try
+            {
+                using (Microsoft.Win32.RegistryKey key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"SOFTWARE\Microsoft\PowerShell\7"))
+                {
+                    string path = (key != null) ? (key.GetValue("Path") as string) : null;
+                    if (!string.IsNullOrEmpty(path))
+                    {
+                        string pwsh = Path.Combine(path.TrimEnd('\\'), "pwsh.exe");
+                        if (File.Exists(pwsh)) return pwsh;
+                    }
+                }
+            }
+            catch { }
+
+            // Try well-known paths
+            string[] candidates = {
+                @"C:\Program Files\PowerShell\7\pwsh.exe",
+                @"C:\Program Files\PowerShell\7-preview\pwsh.exe",
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"Microsoft\PowerShell\7\pwsh.exe")
+            };
+            foreach (string c in candidates)
+                if (File.Exists(c)) return c;
+
+            return null;
+        }
+
+        [STAThread]
+        private static int Main(string[] args)
+        {
+ $(if (!$noVisualStyles -and $noConsole) { "			Application.EnableVisualStyles();" })
+
+            // --- Find PowerShell 7+ runtime ---
+            string pwshExe = FindPwshExe();
+            if (string.IsNullOrEmpty(pwshExe))
+            {
+ $(if (!$noConsole) {@"
+                Console.Error.WriteLine("ERROR: PowerShell 7+ not found. Please install PowerShell 7+ from https://github.com/PowerShell/PowerShell");
+                return 1;
+"@ } else {@"
+                MessageBox.Show("PowerShell 7+ not found. Please install PowerShell 7+ from https://github.com/PowerShell/PowerShell", AppDomain.CurrentDomain.FriendlyName, MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return 1;
+"@ })
+            }
+
+            // --- Parse reserved arguments ---
+            bool paramWait = false;
+            string extractFN = string.Empty;
+            int separator = 0;
+            bool bHelp = false;
+            string sHelp = "";
+            int idx = 0;
+
+            foreach (string s in args)
+            {
+                if (string.Compare(s, "-wait", true) == 0)
+                    paramWait = true;
+                else if (s.StartsWith("-extract", StringComparison.InvariantCultureIgnoreCase))
+                {
+                    string[] s1 = s.Split(new string[] { ":" }, 2, StringSplitOptions.RemoveEmptyEntries);
+                    if (s1.Length != 2)
+                    {
+ $(if (!$noConsole) {@"
+                        Console.WriteLine("If you specify the -extract option you need to add a file for extraction in this way\r\n   -extract:\"<filename>\"");
+"@ } else {@"
+                        MessageBox.Show("If you specify the -extract option you need to add a file for extraction in this way\r\n   -extract:\"<filename>\"", AppDomain.CurrentDomain.FriendlyName, MessageBoxButtons.OK, MessageBoxIcon.Error);
+"@ })
+                        return 1;
+                    }
+                    extractFN = s1[1].Trim(new char[] { '\"' });
+                }
+                else if (string.Compare(s, "-end", true) == 0)
+                {
+                    separator = idx + 1;
+                    break;
+                }
+                else if (string.Compare(s, "-?", true) == 0)
+                {
+                    bHelp = true;
+                }
+                else if (bHelp)
+                {
+                    if ((string.Compare(s, "-detailed", true) == 0) || (string.Compare(s, "-examples", true) == 0) || (string.Compare(s, "-full", true) == 0))
+                    {
+                        sHelp = s;
+                    }
+                }
+                else if (string.Compare(s, "-debug", true) == 0)
+                {
+                    System.Diagnostics.Debugger.Launch();
+                    break;
+                }
+                idx++;
+            }
+
+            Assembly executingAssembly = Assembly.GetExecutingAssembly();
+
+ $EMBEDSECTION
+
+            // --- Read embedded script ---
+            string script;
+            using (System.IO.Stream scriptstream = executingAssembly.GetManifestResourceStream("$([System.IO.Path]::GetFileName($inputFile))"))
+            {
+                using (System.IO.StreamReader scriptreader = new System.IO.StreamReader(scriptstream, System.Text.Encoding.UTF8))
+                {
+                    script = scriptreader.ReadToEnd();
+                }
+            }
+
+            // --- Handle -extract option: save script to file and exit ---
+            if (!string.IsNullOrEmpty(extractFN))
+            {
+                System.IO.File.WriteAllText(extractFN, script);
+                return 0;
+            }
+
+            // --- Prepare wrapper script with $ScriptRoot, $PSScriptRoot, $PSCommandPath and culture setup ---
+            string scriptRoot = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
+            string exePath = Assembly.GetExecutingAssembly().Location;
+            string cultureSetup = "$culturePS";
+
+            // Write wrapper script to temp file
+            string tempScript = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
+                System.AppDomain.CurrentDomain.FriendlyName + "_" + System.Guid.NewGuid().ToString("N") + ".ps1");
+
+            string wrapperScript;
+            if (bHelp)
+            {
+                // Help mode: define function and call Get-Help
+                wrapperScript = cultureSetup +
+                    "`$ScriptRoot = '" + scriptRoot.Replace("'", "''") + "'\r\n" +
+                    "`$PSScriptRoot = '" + scriptRoot.Replace("'", "''") + "'\r\n" +
+                    "`$PSCommandPath = '" + exePath.Replace("'", "''") + "'\r\n" +
+                    "function " + System.AppDomain.CurrentDomain.FriendlyName + " {\r\n" +
+                    script + "\r\n}\r\n" +
+                    "Get-Help " + System.AppDomain.CurrentDomain.FriendlyName + " " + sHelp + " | Out-String";
+            }
+            else
+            {
+                // Normal execution mode
+                wrapperScript = cultureSetup +
+                    "`$ScriptRoot = '" + scriptRoot.Replace("'", "''") + "'\r\n" +
+                    "`$PSScriptRoot = '" + scriptRoot.Replace("'", "''") + "'\r\n" +
+                    "`$PSCommandPath = '" + exePath.Replace("'", "''") + "'\r\n" +
+                    script;
+            }
+
+            System.IO.File.WriteAllText(tempScript, wrapperScript, System.Text.Encoding.UTF8);
+
+            // --- Build pwsh.exe arguments ---
+            StringBuilder pwshArgs = new StringBuilder();
+            pwshArgs.Append("-NoProfile -NoLogo -ExecutionPolicy Bypass -File \"" + tempScript + "\"");
+
+            // Add script arguments (after -end separator)
+            for (int i = separator; i < args.Length; i++)
+            {
+                string arg = args[i];
+                if (arg.Contains(" ") || arg.Contains("\""))
+                    pwshArgs.Append(" \"" + arg.Replace("\"", "\\\"") + "\"");
+                else
+                    pwshArgs.Append(" " + arg);
+            }
+
+            // --- Configure and launch pwsh.exe ---
+            ProcessStartInfo psi = new ProcessStartInfo();
+            psi.FileName = pwshExe;
+            psi.Arguments = pwshArgs.ToString();
+
+ $(if (!$noConsole) {@"
+            // Console mode: inherit console for interactive input/output
+            psi.UseShellExecute = false;
+"@ } else {@"
+            // GUI mode: hidden window, capture output
+            psi.UseShellExecute = false;
+            psi.RedirectStandardOutput = true;
+            psi.RedirectStandardError = true;
+            psi.CreateNoWindow = true;
+"@ })
+
+            Process process;
+            try
+            {
+                process = Process.Start(psi);
+            }
+            catch (Exception ex)
+            {
+ $(if (!$noConsole) {@"
+                Console.Error.WriteLine("Failed to start PowerShell 7+: " + ex.Message);
+"@ } else {@"
+                MessageBox.Show("Failed to start PowerShell 7+: " + ex.Message, AppDomain.CurrentDomain.FriendlyName, MessageBoxButtons.OK, MessageBoxIcon.Error);
+"@ })
+                try { File.Delete(tempScript); } catch { }
+                return 1;
+            }
+
+ $(if ($noConsole) {@"
+            // GUI mode: capture all output
+            string stdoutOutput = process.StandardOutput.ReadToEnd();
+            string stderrOutput = process.StandardError.ReadToEnd();
+"@ })
+
+            process.WaitForExit();
+            int exitCode = process.ExitCode;
+
+            // --- Clean up temp script ---
+            try { File.Delete(tempScript); } catch { }
+
+ $(if ($noConsole) {@"
+            // --- Show output in GUI mode ---
+            if (!string.IsNullOrEmpty(stderrOutput))
+                MessageBox.Show(stderrOutput, AppDomain.CurrentDomain.FriendlyName, MessageBoxButtons.OK, MessageBoxIcon.Error);
+            if (!string.IsNullOrEmpty(stdoutOutput))
+                MessageBox.Show(stdoutOutput, AppDomain.CurrentDomain.FriendlyName);
+"@ })
+
+            // --- Handle -wait option ---
+            if (paramWait)
+            {
+ $(if (!$noConsole) {@"
+                Console.WriteLine("Hit any key to exit...");
+                Console.ReadKey();
+"@ } else {@"
+                MessageBox.Show("Click OK to exit...", AppDomain.CurrentDomain.FriendlyName);
+"@ })
+            }
+
+            return exitCode;
+        }
+
+        static void CurrentDomain_UnhandledException(object sender, UnhandledExceptionEventArgs e)
+        {
+            throw new Exception("Unhandled exception in " + AppDomain.CurrentDomain.FriendlyName);
+        }
+    }
+}
+"@
+    }
+    else
+    {
+        # ==================================================================
+        # ORIGINAL TEMPLATE (in-process PowerShell host for .NET Framework)
+        # ==================================================================
+        $programFrame = @"
 // Simple PowerShell host created by Ingo Karstein (http://blog.karstein-consulting.com)
 // Reworked and GUI support by Markus Scholtes
 
@@ -486,11 +903,11 @@ using System.Management.Automation.Host;
 using System.Security;
 using System.Reflection;
 using System.Runtime.InteropServices;
-$(if ($noConsole) {@"
+ $(if ($noConsole) {@"
 using System.Windows.Forms;
 using System.Drawing;
 "@ })
-$(if ($winFormsDPIAware) {@"
+ $(if ($winFormsDPIAware) {@"
 using System.Runtime.Versioning;
 "@ })
 
@@ -498,2345 +915,2276 @@ using System.Runtime.Versioning;
 [assembly:AssemblyProduct("$product")]
 [assembly:AssemblyCopyright("$copyright")]
 [assembly:AssemblyTrademark("$trademark")]
-$(if (![STRING]::IsNullOrEmpty($version)) {@"
+ $(if (![STRING]::IsNullOrEmpty($version)) {@"
 [assembly:AssemblyVersion("$version")]
 [assembly:AssemblyFileVersion("$version")]
 "@ })
 // not displayed in details tab of properties dialog, but embedded to file
 [assembly:AssemblyDescription("$description")]
 [assembly:AssemblyCompany("$company")]
-$(if ($winFormsDPIAware) {@"
+ $(if ($winFormsDPIAware) {@"
 [assembly:TargetFrameworkAttribute(".NETFramework,Version=v4.7,Profile=Client",FrameworkDisplayName=".NET Framework 4.7")]
 "@ })
 
 namespace ModuleNameSpace
 {
-$(if ($noConsole -or $credentialGUI) {@"
-	internal class Credential_Form
-	{
-		[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-		private struct CREDUI_INFO
-		{
-			public int cbSize;
-			public IntPtr hwndParent;
-			public string pszMessageText;
-			public string pszCaptionText;
-			public IntPtr hbmBanner;
-		}
+ $(if ($noConsole -or $credentialGUI) {@"
+    internal class Credential_Form
+    {
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct CREDUI_INFO
+        {
+            public int cbSize;
+            public IntPtr hwndParent;
+            public string pszMessageText;
+            public string pszCaptionText;
+            public IntPtr hbmBanner;
+        }
 
-		[Flags]
-		enum CREDUI_FLAGS
-		{
-			INCORRECT_PASSWORD = 0x1,
-			DO_NOT_PERSIST = 0x2,
-			REQUEST_ADMINISTRATOR = 0x4,
-			EXCLUDE_CERTIFICATES = 0x8,
-			REQUIRE_CERTIFICATE = 0x10,
-			SHOW_SAVE_CHECK_BOX = 0x40,
-			ALWAYS_SHOW_UI = 0x80,
-			REQUIRE_SMARTCARD = 0x100,
-			PASSWORD_ONLY_OK = 0x200,
-			VALIDATE_USERNAME = 0x400,
-			COMPLETE_USERNAME = 0x800,
-			PERSIST = 0x1000,
-			SERVER_CREDENTIAL = 0x4000,
-			EXPECT_CONFIRMATION = 0x20000,
-			GENERIC_CREDENTIALS = 0x40000,
-			USERNAME_TARGET_CREDENTIALS = 0x80000,
-			KEEP_USERNAME = 0x100000,
-		}
+        [Flags]
+        enum CREDUI_FLAGS
+        {
+            INCORRECT_PASSWORD = 0x1,
+            DO_NOT_PERSIST = 0x2,
+            REQUEST_ADMINISTRATOR = 0x4,
+            EXCLUDE_CERTIFICATES = 0x8,
+            REQUIRE_CERTIFICATE = 0x10,
+            SHOW_SAVE_CHECK_BOX = 0x40,
+            ALWAYS_SHOW_UI = 0x80,
+            REQUIRE_SMARTCARD = 0x100,
+            PASSWORD_ONLY_OK = 0x200,
+            VALIDATE_USERNAME = 0x400,
+            COMPLETE_USERNAME = 0x800,
+            PERSIST = 0x1000,
+            SERVER_CREDENTIAL = 0x4000,
+            EXPECT_CONFIRMATION = 0x20000,
+            GENERIC_CREDENTIALS = 0x40000,
+            USERNAME_TARGET_CREDENTIALS = 0x80000,
+            KEEP_USERNAME = 0x100000,
+        }
 
-		public enum CredUI_ReturnCodes
-		{
-			NO_ERROR = 0,
-			ERROR_CANCELLED = 1223,
-			ERROR_NO_SUCH_LOGON_SESSION = 1312,
-			ERROR_NOT_FOUND = 1168,
-			ERROR_INVALID_ACCOUNT_NAME = 1315,
-			ERROR_INSUFFICIENT_BUFFER = 122,
-			ERROR_INVALID_PARAMETER = 87,
-			ERROR_INVALID_FLAGS = 1004,
-		}
+        public enum CredUI_ReturnCodes
+        {
+            NO_ERROR = 0,
+            ERROR_CANCELLED = 1223,
+            ERROR_NO_SUCH_LOGON_SESSION = 1312,
+            ERROR_NOT_FOUND = 1168,
+            ERROR_INVALID_ACCOUNT_NAME = 1315,
+            ERROR_INSUFFICIENT_BUFFER = 122,
+            ERROR_INVALID_PARAMETER = 87,
+            ERROR_INVALID_FLAGS = 1004,
+        }
 
-		[DllImport("credui", CharSet = CharSet.Unicode)]
-		private static extern CredUI_ReturnCodes CredUIPromptForCredentials(ref CREDUI_INFO credinfo,
-			string targetName,
-			IntPtr reserved1,
-			int iError,
-			StringBuilder userName,
-			int maxUserName,
-			StringBuilder password,
-			int maxPassword,
-			[MarshalAs(UnmanagedType.Bool)] ref bool pfSave,
-			CREDUI_FLAGS flags);
+        [DllImport("credui", CharSet = CharSet.Unicode)]
+        private static extern CredUI_ReturnCodes CredUIPromptForCredentials(ref CREDUI_INFO credinfo,
+            string targetName,
+            IntPtr reserved1,
+            int iError,
+            StringBuilder userName,
+            int maxUserName,
+            StringBuilder password,
+            int maxPassword,
+            [MarshalAs(UnmanagedType.Bool)] ref bool pfSave,
+            CREDUI_FLAGS flags);
 
-		public class User_Pwd
-		{
-			public string User = string.Empty;
-			public string Password = string.Empty;
-			public string Domain = string.Empty;
-		}
+        public class User_Pwd
+        {
+            public string User = string.Empty;
+            public string Password = string.Empty;
+            public string Domain = string.Empty;
+        }
 
-		internal static User_Pwd PromptForPassword(string caption, string message, string target, string user, PSCredentialTypes credTypes, PSCredentialUIOptions options)
-		{
-			// Flags und Variablen initialisieren
-			StringBuilder userPassword = new StringBuilder("", 128), userID = new StringBuilder(user, 128);
-			CREDUI_INFO credUI = new CREDUI_INFO();
-			if (!string.IsNullOrEmpty(message)) credUI.pszMessageText = message;
-			if (!string.IsNullOrEmpty(caption)) credUI.pszCaptionText = caption;
-			credUI.cbSize = Marshal.SizeOf(credUI);
-			bool save = false;
+        internal static User_Pwd PromptForPassword(string caption, string message, string target, string user, PSCredentialTypes credTypes, PSCredentialUIOptions options)
+        {
+            // Initialize flags and variables
+            StringBuilder userPassword = new StringBuilder("", 128), userID = new StringBuilder(user, 128);
+            CREDUI_INFO credUI = new CREDUI_INFO();
+            if (!string.IsNullOrEmpty(message)) credUI.pszMessageText = message;
+            if (!string.IsNullOrEmpty(caption)) credUI.pszCaptionText = caption;
+            credUI.cbSize = Marshal.SizeOf(credUI);
+            bool save = false;
 
-			CREDUI_FLAGS flags = CREDUI_FLAGS.DO_NOT_PERSIST;
-			if ((credTypes & PSCredentialTypes.Generic) == PSCredentialTypes.Generic)
-			{
-				flags |= CREDUI_FLAGS.GENERIC_CREDENTIALS;
-				if ((options & PSCredentialUIOptions.AlwaysPrompt) == PSCredentialUIOptions.AlwaysPrompt)
-				{
-					flags |= CREDUI_FLAGS.ALWAYS_SHOW_UI;
-				}
-			}
+            CREDUI_FLAGS flags = CREDUI_FLAGS.DO_NOT_PERSIST;
+            if ((credTypes & PSCredentialTypes.Generic) == PSCredentialTypes.Generic)
+            {
+                flags |= CREDUI_FLAGS.GENERIC_CREDENTIALS;
+                if ((options & PSCredentialUIOptions.AlwaysPrompt) == PSCredentialUIOptions.AlwaysPrompt)
+                {
+                    flags |= CREDUI_FLAGS.ALWAYS_SHOW_UI;
+                }
+            }
 
-			// den Benutzer nach Kennwort fragen, grafischer Prompt
-			CredUI_ReturnCodes returnCode = CredUIPromptForCredentials(ref credUI, target, IntPtr.Zero, 0, userID, 128, userPassword, 128, ref save, flags);
+            // Prompt user for password (graphical prompt)
+            CredUI_ReturnCodes returnCode = CredUIPromptForCredentials(ref credUI, target, IntPtr.Zero, 0, userID, 128, userPassword, 128, ref save, flags);
 
-			if (returnCode == CredUI_ReturnCodes.NO_ERROR)
-			{
-				User_Pwd ret = new User_Pwd();
-				ret.User = userID.ToString();
-				ret.Password = userPassword.ToString();
-				ret.Domain = "";
-				return ret;
-			}
+            if (returnCode == CredUI_ReturnCodes.NO_ERROR)
+            {
+                User_Pwd ret = new User_Pwd();
+                ret.User = userID.ToString();
+                ret.Password = userPassword.ToString();
+                ret.Domain = "";
+                return ret;
+            }
 
-			return null;
-		}
-	}
+            return null;
+        }
+    }
 "@ })
 
-	internal class MainModuleRawUI : PSHostRawUserInterface
-	{
-$(if ($noConsole){ @"
-		// Speicher für Konsolenfarben bei GUI-Output werden gelesen und gesetzt, aber im Moment nicht genutzt (for future use)
-		private ConsoleColor GUIBackgroundColor = ConsoleColor.White;
-		private ConsoleColor GUIForegroundColor = ConsoleColor.Black;
-$(if ([STRING]::IsNullOrEmpty($title)){ @"
-		private string GUITitle = System.AppDomain.CurrentDomain.FriendlyName;
+    internal class MainModuleRawUI : PSHostRawUserInterface
+    {
+ $(if ($noConsole){ @"
+        // Storage for console colors in GUI mode (read and set but not currently used)
+        private ConsoleColor GUIBackgroundColor = ConsoleColor.White;
+        private ConsoleColor GUIForegroundColor = ConsoleColor.Black;
+ $(if ([STRING]::IsNullOrEmpty($title)){ @"
+        private string GUITitle = System.AppDomain.CurrentDomain.FriendlyName;
 "@ } else {@"
-		private string GUITitle = Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyTitleAttribute>().Title;
+        private string GUITitle = Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyTitleAttribute>().Title;
 "@ })
 "@ } else {@"
-		const int STD_OUTPUT_HANDLE = -11;
+        const int STD_OUTPUT_HANDLE = -11;
 
-		//CHAR_INFO struct, which was a union in the old days
-		// so we want to use LayoutKind.Explicit to mimic it as closely
-		// as we can
-		[StructLayout(LayoutKind.Explicit)]
-		public struct CHAR_INFO
-		{
-			[FieldOffset(0)]
-			internal char UnicodeChar;
-			[FieldOffset(0)]
-			internal char AsciiChar;
-			[FieldOffset(2)] //2 bytes seems to work properly
-			internal UInt16 Attributes;
-		}
+        // CHAR_INFO struct, which was a union in the old days
+        // so we want to use LayoutKind.Explicit to mimic it as closely as we can
+        [StructLayout(LayoutKind.Explicit)]
+        public struct CHAR_INFO
+        {
+            [FieldOffset(0)]
+            internal char UnicodeChar;
+            [FieldOffset(0)]
+            internal char AsciiChar;
+            [FieldOffset(2)]
+            internal UInt16 Attributes;
+        }
 
-		//COORD struct
-		[StructLayout(LayoutKind.Sequential)]
-		public struct COORD
-		{
-			public short X;
-			public short Y;
-		}
+        // COORD struct
+        [StructLayout(LayoutKind.Sequential)]
+        public struct COORD
+        {
+            public short X;
+            public short Y;
+        }
 
-		//SMALL_RECT struct
-		[StructLayout(LayoutKind.Sequential)]
-		public struct SMALL_RECT
-		{
-			public short Left;
-			public short Top;
-			public short Right;
-			public short Bottom;
-		}
+        // SMALL_RECT struct
+        [StructLayout(LayoutKind.Sequential)]
+        public struct SMALL_RECT
+        {
+            public short Left;
+            public short Top;
+            public short Right;
+            public short Bottom;
+        }
 
-		/* Reads character and color attribute data from a rectangular block of character cells in a console screen buffer,
-			 and the function writes the data to a rectangular block at a specified location in the destination buffer. */
-		[DllImport("kernel32.dll", EntryPoint = "ReadConsoleOutputW", CharSet = CharSet.Unicode, SetLastError = true)]
-		internal static extern bool ReadConsoleOutput(
-			IntPtr hConsoleOutput,
-			/* This pointer is treated as the origin of a two-dimensional array of CHAR_INFO structures
-			whose size is specified by the dwBufferSize parameter.*/
-			[MarshalAs(UnmanagedType.LPArray), Out] CHAR_INFO[,] lpBuffer,
-			COORD dwBufferSize,
-			COORD dwBufferCoord,
-			ref SMALL_RECT lpReadRegion);
+        [DllImport("kernel32.dll", EntryPoint = "ReadConsoleOutputW", CharSet = CharSet.Unicode, SetLastError = true)]
+        internal static extern bool ReadConsoleOutput(
+            IntPtr hConsoleOutput,
+            [MarshalAs(UnmanagedType.LPArray), Out] CHAR_INFO[,] lpBuffer,
+            COORD dwBufferSize,
+            COORD dwBufferCoord,
+            ref SMALL_RECT lpReadRegion);
 
-		/* Writes character and color attribute data to a specified rectangular block of character cells in a console screen buffer.
-			The data to be written is taken from a correspondingly sized rectangular block at a specified location in the source buffer */
-		[DllImport("kernel32.dll", EntryPoint = "WriteConsoleOutputW", CharSet = CharSet.Unicode, SetLastError = true)]
-		internal static extern bool WriteConsoleOutput(
-			IntPtr hConsoleOutput,
-			/* This pointer is treated as the origin of a two-dimensional array of CHAR_INFO structures
-			whose size is specified by the dwBufferSize parameter.*/
-			[MarshalAs(UnmanagedType.LPArray), In] CHAR_INFO[,] lpBuffer,
-			COORD dwBufferSize,
-			COORD dwBufferCoord,
-			ref SMALL_RECT lpWriteRegion);
+        [DllImport("kernel32.dll", EntryPoint = "WriteConsoleOutputW", CharSet = CharSet.Unicode, SetLastError = true)]
+        internal static extern bool WriteConsoleOutput(
+            IntPtr hConsoleOutput,
+            [MarshalAs(UnmanagedType.LPArray), In] CHAR_INFO[,] lpBuffer,
+            COORD dwBufferSize,
+            COORD dwBufferCoord,
+            ref SMALL_RECT lpWriteRegion);
 
-		/* Moves a block of data in a screen buffer. The effects of the move can be limited by specifying a clipping rectangle, so
-			the contents of the console screen buffer outside the clipping rectangle are unchanged. */
-		[DllImport("kernel32.dll", SetLastError = true)]
-		static extern bool ScrollConsoleScreenBuffer(
-			IntPtr hConsoleOutput,
-			[In] ref SMALL_RECT lpScrollRectangle,
-			[In] ref SMALL_RECT lpClipRectangle,
-			COORD dwDestinationOrigin,
-			[In] ref CHAR_INFO lpFill);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool ScrollConsoleScreenBuffer(
+            IntPtr hConsoleOutput,
+            [In] ref SMALL_RECT lpScrollRectangle,
+            [In] ref SMALL_RECT lpClipRectangle,
+            COORD dwDestinationOrigin,
+            [In] ref CHAR_INFO lpFill);
 
-		[DllImport("kernel32.dll", SetLastError = true)]
-			static extern IntPtr GetStdHandle(int nStdHandle);
+        [DllImport("kernel32.dll", SetLastError = true)]
+            static extern IntPtr GetStdHandle(int nStdHandle);
 "@ })
 
-		public override ConsoleColor BackgroundColor
-		{
-$(if (!$noConsole){ @"
-			get
-			{
-				return Console.BackgroundColor;
-			}
-			set
-			{
-				Console.BackgroundColor = value;
-			}
+        public override ConsoleColor BackgroundColor
+        {
+ $(if (!$noConsole){ @"
+            get
+            {
+                return Console.BackgroundColor;
+            }
+            set
+            {
+                Console.BackgroundColor = value;
+            }
 "@ } else {@"
-			get
-			{
-				return GUIBackgroundColor;
-			}
-			set
-			{
-				GUIBackgroundColor = value;
-			}
+            get
+            {
+                return GUIBackgroundColor;
+            }
+            set
+            {
+                GUIBackgroundColor = value;
+            }
 "@ })
-		}
+        }
 
-		public override System.Management.Automation.Host.Size BufferSize
-		{
-			get
-			{
-$(if (!$noConsole){ @"
-				if (Console.IsOutputRedirected)
-					// return default value for redirection. If no valid value is returned WriteLine will not be called
-					return new System.Management.Automation.Host.Size(120, 50);
-				else
-					return new System.Management.Automation.Host.Size(Console.BufferWidth, Console.BufferHeight);
+        public override System.Management.Automation.Host.Size BufferSize
+        {
+            get
+            {
+ $(if (!$noConsole){ @"
+                if (Console.IsOutputRedirected)
+                    return new System.Management.Automation.Host.Size(120, 50);
+                else
+                    return new System.Management.Automation.Host.Size(Console.BufferWidth, Console.BufferHeight);
 "@ } else {@"
-					// return default value for Winforms. If no valid value is returned WriteLine will not be called
-				return new System.Management.Automation.Host.Size(120, 50);
+                return new System.Management.Automation.Host.Size(120, 50);
 "@ })
-			}
-			set
-			{
-$(if (!$noConsole){ @"
-				Console.BufferWidth = value.Width;
-				Console.BufferHeight = value.Height;
+            }
+            set
+            {
+ $(if (!$noConsole){ @"
+                Console.BufferWidth = value.Width;
+                Console.BufferHeight = value.Height;
 "@ })
-			}
-		}
+            }
+        }
 
-		public override Coordinates CursorPosition
-		{
-			get
-			{
-$(if (!$noConsole){ @"
-				return new Coordinates(Console.CursorLeft, Console.CursorTop);
+        public override Coordinates CursorPosition
+        {
+            get
+            {
+ $(if (!$noConsole){ @"
+                return new Coordinates(Console.CursorLeft, Console.CursorTop);
 "@ } else {@"
-				// Dummywert für Winforms zurückgeben.
-				return new Coordinates(0, 0);
+                return new Coordinates(0, 0);
 "@ })
-			}
-			set
-			{
-$(if (!$noConsole){ @"
-				Console.CursorTop = value.Y;
-				Console.CursorLeft = value.X;
+            }
+            set
+            {
+ $(if (!$noConsole){ @"
+                Console.CursorTop = value.Y;
+                Console.CursorLeft = value.X;
 "@ })
-			}
-		}
+            }
+        }
 
-		public override int CursorSize
-		{
-			get
-			{
-$(if (!$noConsole){ @"
-				return Console.CursorSize;
+        public override int CursorSize
+        {
+            get
+            {
+ $(if (!$noConsole){ @"
+                return Console.CursorSize;
 "@ } else {@"
-				// Dummywert für Winforms zurückgeben.
-				return 25;
+                return 25;
 "@ })
-			}
-			set
-			{
-$(if (!$noConsole){ @"
-				Console.CursorSize = value;
+            }
+            set
+            {
+ $(if (!$noConsole){ @"
+                Console.CursorSize = value;
 "@ })
-			}
-		}
+            }
+        }
 
-$(if ($noConsole){ @"
-		private Form Invisible_Form = null;
+ $(if ($noConsole){ @"
+        private Form Invisible_Form = null;
 "@ })
 
-		public override void FlushInputBuffer()
-		{
-$(if (!$noConsole){ @"
-			if (!Console.IsInputRedirected)
-			{	while (Console.KeyAvailable)
-					Console.ReadKey(true);
-			}
+        public override void FlushInputBuffer()
+        {
+ $(if (!$noConsole){ @"
+            if (!Console.IsInputRedirected)
+            {	while (Console.KeyAvailable)
+                    Console.ReadKey(true);
+            }
 "@ } else {@"
-			if (Invisible_Form != null)
-			{
-				Invisible_Form.Close();
-				Invisible_Form = null;
-			}
-			else
-			{
-				Invisible_Form = new Form();
-				Invisible_Form.Opacity = 0;
-				Invisible_Form.ShowInTaskbar = false;
-				Invisible_Form.Visible = true;
-			}
+            if (Invisible_Form != null)
+            {
+                Invisible_Form.Close();
+                Invisible_Form = null;
+            }
+            else
+            {
+                Invisible_Form = new Form();
+                Invisible_Form.Opacity = 0;
+                Invisible_Form.ShowInTaskbar = false;
+                Invisible_Form.Visible = true;
+            }
 "@ })
-		}
+        }
 
-		public override ConsoleColor ForegroundColor
-		{
-$(if (!$noConsole){ @"
-			get
-			{
-				return Console.ForegroundColor;
-			}
-			set
-			{
-				Console.ForegroundColor = value;
-			}
+        public override ConsoleColor ForegroundColor
+        {
+ $(if (!$noConsole){ @"
+            get
+            {
+                return Console.ForegroundColor;
+            }
+            set
+            {
+                Console.ForegroundColor = value;
+            }
 "@ } else {@"
-			get
-			{
-				return GUIForegroundColor;
-			}
-			set
-			{
-				GUIForegroundColor = value;
-			}
+            get
+            {
+                return GUIForegroundColor;
+            }
+            set
+            {
+                GUIForegroundColor = value;
+            }
 "@ })
-		}
+        }
 
-		public override BufferCell[,] GetBufferContents(System.Management.Automation.Host.Rectangle rectangle)
-		{
-$(if (!$noConsole) {@"
-			IntPtr hStdOut = GetStdHandle(STD_OUTPUT_HANDLE);
-			CHAR_INFO[,] buffer = new CHAR_INFO[rectangle.Bottom - rectangle.Top + 1, rectangle.Right - rectangle.Left + 1];
-			COORD buffer_size = new COORD() {X = (short)(rectangle.Right - rectangle.Left + 1), Y = (short)(rectangle.Bottom - rectangle.Top + 1)};
-			COORD buffer_index = new COORD() {X = 0, Y = 0};
-			SMALL_RECT screen_rect = new SMALL_RECT() {Left = (short)rectangle.Left, Top = (short)rectangle.Top, Right = (short)rectangle.Right, Bottom = (short)rectangle.Bottom};
+        public override BufferCell[,] GetBufferContents(System.Management.Automation.Host.Rectangle rectangle)
+        {
+ $(if (!$noConsole) {@"
+            IntPtr hStdOut = GetStdHandle(STD_OUTPUT_HANDLE);
+            CHAR_INFO[,] buffer = new CHAR_INFO[rectangle.Bottom - rectangle.Top + 1, rectangle.Right - rectangle.Left + 1];
+            COORD buffer_size = new COORD() {X = (short)(rectangle.Right - rectangle.Left + 1), Y = (short)(rectangle.Bottom - rectangle.Top + 1)};
+            COORD buffer_index = new COORD() {X = 0, Y = 0};
+            SMALL_RECT screen_rect = new SMALL_RECT() {Left = (short)rectangle.Left, Top = (short)rectangle.Top, Right = (short)rectangle.Right, Bottom = (short)rectangle.Bottom};
 
-			ReadConsoleOutput(hStdOut, buffer, buffer_size, buffer_index, ref screen_rect);
+            ReadConsoleOutput(hStdOut, buffer, buffer_size, buffer_index, ref screen_rect);
 
-			System.Management.Automation.Host.BufferCell[,] ScreenBuffer = new System.Management.Automation.Host.BufferCell[rectangle.Bottom - rectangle.Top + 1, rectangle.Right - rectangle.Left + 1];
-			for (int y = 0; y <= rectangle.Bottom - rectangle.Top; y++)
-				for (int x = 0; x <= rectangle.Right - rectangle.Left; x++)
-				{
-					ScreenBuffer[y,x] = new System.Management.Automation.Host.BufferCell(buffer[y,x].AsciiChar, (System.ConsoleColor)(buffer[y,x].Attributes & 0xF), (System.ConsoleColor)((buffer[y,x].Attributes & 0xF0) / 0x10), System.Management.Automation.Host.BufferCellType.Complete);
-				}
+            System.Management.Automation.Host.BufferCell[,] ScreenBuffer = new System.Management.Automation.Host.BufferCell[rectangle.Bottom - rectangle.Top + 1, rectangle.Right - rectangle.Left + 1];
+            for (int y = 0; y <= rectangle.Bottom - rectangle.Top; y++)
+                for (int x = 0; x <= rectangle.Right - rectangle.Left; x++)
+                {
+                    ScreenBuffer[y,x] = new System.Management.Automation.Host.BufferCell(buffer[y,x].AsciiChar, (System.ConsoleColor)(buffer[y,x].Attributes & 0xF), (System.ConsoleColor)((buffer[y,x].Attributes & 0xF0) / 0x10), System.Management.Automation.Host.BufferCellType.Complete);
+                }
 
-			return ScreenBuffer;
+            return ScreenBuffer;
 "@ } else {@"
-			System.Management.Automation.Host.BufferCell[,] ScreenBuffer = new System.Management.Automation.Host.BufferCell[rectangle.Bottom - rectangle.Top + 1, rectangle.Right - rectangle.Left + 1];
+            System.Management.Automation.Host.BufferCell[,] ScreenBuffer = new System.Management.Automation.Host.BufferCell[rectangle.Bottom - rectangle.Top + 1, rectangle.Right - rectangle.Left + 1];
 
-			for (int y = 0; y <= rectangle.Bottom - rectangle.Top; y++)
-				for (int x = 0; x <= rectangle.Right - rectangle.Left; x++)
-				{
-					ScreenBuffer[y,x] = new System.Management.Automation.Host.BufferCell(' ', GUIForegroundColor, GUIBackgroundColor, System.Management.Automation.Host.BufferCellType.Complete);
-				}
+            for (int y = 0; y <= rectangle.Bottom - rectangle.Top; y++)
+                for (int x = 0; x <= rectangle.Right - rectangle.Left; x++)
+                {
+                    ScreenBuffer[y,x] = new System.Management.Automation.Host.BufferCell(' ', GUIForegroundColor, GUIBackgroundColor, System.Management.Automation.Host.BufferCellType.Complete);
+                }
 
-			return ScreenBuffer;
+            return ScreenBuffer;
 "@ })
-		}
+        }
 
-		public override bool KeyAvailable
-		{
-			get
-			{
-$(if (!$noConsole) {@"
-				return Console.KeyAvailable;
+        public override bool KeyAvailable
+        {
+            get
+            {
+ $(if (!$noConsole) {@"
+                return Console.KeyAvailable;
 "@ } else {@"
-				return true;
+                return true;
 "@ })
-			}
-		}
+            }
+        }
 
-		public override System.Management.Automation.Host.Size MaxPhysicalWindowSize
-		{
-			get
-			{
-$(if (!$noConsole){ @"
-				return new System.Management.Automation.Host.Size(Console.LargestWindowWidth, Console.LargestWindowHeight);
+        public override System.Management.Automation.Host.Size MaxPhysicalWindowSize
+        {
+            get
+            {
+ $(if (!$noConsole){ @"
+                return new System.Management.Automation.Host.Size(Console.LargestWindowWidth, Console.LargestWindowHeight);
 "@ } else {@"
-				// Dummy-Wert für Winforms
-				return new System.Management.Automation.Host.Size(240, 84);
+                return new System.Management.Automation.Host.Size(240, 84);
 "@ })
-			}
-		}
+            }
+        }
 
-		public override System.Management.Automation.Host.Size MaxWindowSize
-		{
-			get
-			{
-$(if (!$noConsole){ @"
-				return new System.Management.Automation.Host.Size(Console.BufferWidth, Console.BufferWidth);
+        public override System.Management.Automation.Host.Size MaxWindowSize
+        {
+            get
+            {
+ $(if (!$noConsole){ @"
+                return new System.Management.Automation.Host.Size(Console.BufferWidth, Console.BufferWidth);
 "@ } else {@"
-				// Dummy-Wert für Winforms
-				return new System.Management.Automation.Host.Size(120, 84);
+                return new System.Management.Automation.Host.Size(120, 84);
 "@ })
-			}
-		}
+            }
+        }
 
-		public override KeyInfo ReadKey(ReadKeyOptions options)
-		{
-$(if (!$noConsole) {@"
-			ConsoleKeyInfo cki = Console.ReadKey((options & ReadKeyOptions.NoEcho)!=0);
+        public override KeyInfo ReadKey(ReadKeyOptions options)
+        {
+ $(if (!$noConsole) {@"
+            ConsoleKeyInfo cki = Console.ReadKey((options & ReadKeyOptions.NoEcho)!=0);
 
-			ControlKeyStates cks = 0;
-			if ((cki.Modifiers & ConsoleModifiers.Alt) != 0)
-				cks |= ControlKeyStates.LeftAltPressed | ControlKeyStates.RightAltPressed;
-			if ((cki.Modifiers & ConsoleModifiers.Control) != 0)
-				cks |= ControlKeyStates.LeftCtrlPressed | ControlKeyStates.RightCtrlPressed;
-			if ((cki.Modifiers & ConsoleModifiers.Shift) != 0)
-				cks |= ControlKeyStates.ShiftPressed;
-			if (Console.CapsLock)
-				cks |= ControlKeyStates.CapsLockOn;
-			if (Console.NumberLock)
-				cks |= ControlKeyStates.NumLockOn;
+            ControlKeyStates cks = 0;
+            if ((cki.Modifiers & ConsoleModifiers.Alt) != 0)
+                cks |= ControlKeyStates.LeftAltPressed | ControlKeyStates.RightAltPressed;
+            if ((cki.Modifiers & ConsoleModifiers.Control) != 0)
+                cks |= ControlKeyStates.LeftCtrlPressed | ControlKeyStates.RightCtrlPressed;
+            if ((cki.Modifiers & ConsoleModifiers.Shift) != 0)
+                cks |= ControlKeyStates.ShiftPressed;
+            if (Console.CapsLock)
+                cks |= ControlKeyStates.CapsLockOn;
+            if (Console.NumberLock)
+                cks |= ControlKeyStates.NumLockOn;
 
-			return new KeyInfo((int)cki.Key, cki.KeyChar, cks, (options & ReadKeyOptions.IncludeKeyDown)!=0);
+            return new KeyInfo((int)cki.Key, cki.KeyChar, cks, (options & ReadKeyOptions.IncludeKeyDown)!=0);
 "@ } else {@"
-			if ((options & ReadKeyOptions.IncludeKeyDown)!=0)
-				return ReadKey_Box.Show(WindowTitle, "", true);
-			else
-				return ReadKey_Box.Show(WindowTitle, "", false);
+            if ((options & ReadKeyOptions.IncludeKeyDown)!=0)
+                return ReadKey_Box.Show(WindowTitle, "", true);
+            else
+                return ReadKey_Box.Show(WindowTitle, "", false);
 "@ })
-		}
+        }
 
-		public override void ScrollBufferContents(System.Management.Automation.Host.Rectangle source, Coordinates destination, System.Management.Automation.Host.Rectangle clip, BufferCell fill)
-		{ // no destination block clipping implemented
-$(if (!$noConsole) { @"
-			// clip area out of source range?
-			if ((source.Left > clip.Right) || (source.Right < clip.Left) || (source.Top > clip.Bottom) || (source.Bottom < clip.Top))
-			{ // clipping out of range -> nothing to do
-				return;
-			}
+        public override void ScrollBufferContents(System.Management.Automation.Host.Rectangle source, Coordinates destination, System.Management.Automation.Host.Rectangle clip, BufferCell fill)
+        {
+ $(if (!$noConsole) { @"
+            if ((source.Left > clip.Right) || (source.Right < clip.Left) || (source.Top > clip.Bottom) || (source.Bottom < clip.Top))
+            {
+                return;
+            }
 
-			IntPtr hStdOut = GetStdHandle(STD_OUTPUT_HANDLE);
-			SMALL_RECT lpScrollRectangle = new SMALL_RECT() {Left = (short)source.Left, Top = (short)source.Top, Right = (short)(source.Right), Bottom = (short)(source.Bottom)};
-			SMALL_RECT lpClipRectangle;
-			if (clip != null)
-			{ lpClipRectangle = new SMALL_RECT() {Left = (short)clip.Left, Top = (short)clip.Top, Right = (short)(clip.Right), Bottom = (short)(clip.Bottom)}; }
-			else
-			{ lpClipRectangle = new SMALL_RECT() {Left = (short)0, Top = (short)0, Right = (short)(Console.WindowWidth - 1), Bottom = (short)(Console.WindowHeight - 1)}; }
-			COORD dwDestinationOrigin = new COORD() {X = (short)(destination.X), Y = (short)(destination.Y)};
-			CHAR_INFO lpFill = new CHAR_INFO() { AsciiChar = fill.Character, Attributes = (ushort)((int)(fill.ForegroundColor) + (int)(fill.BackgroundColor)*16) };
+            IntPtr hStdOut = GetStdHandle(STD_OUTPUT_HANDLE);
+            SMALL_RECT lpScrollRectangle = new SMALL_RECT() {Left = (short)source.Left, Top = (short)source.Top, Right = (short)(source.Right), Bottom = (short)(source.Bottom)};
+            SMALL_RECT lpClipRectangle;
+            if (clip != null)
+            { lpClipRectangle = new SMALL_RECT() {Left = (short)clip.Left, Top = (short)clip.Top, Right = (short)(clip.Right), Bottom = (short)(clip.Bottom)}; }
+            else
+            { lpClipRectangle = new SMALL_RECT() {Left = (short)0, Top = (short)0, Right = (short)(Console.WindowWidth - 1), Bottom = (short)(Console.WindowHeight - 1)}; }
+            COORD dwDestinationOrigin = new COORD() {X = (short)(destination.X), Y = (short)(destination.Y)};
+            CHAR_INFO lpFill = new CHAR_INFO() { AsciiChar = fill.Character, Attributes = (ushort)((int)(fill.ForegroundColor) + (int)(fill.BackgroundColor)*16) };
 
-			ScrollConsoleScreenBuffer(hStdOut, ref lpScrollRectangle, ref lpClipRectangle, dwDestinationOrigin, ref lpFill);
+            ScrollConsoleScreenBuffer(hStdOut, ref lpScrollRectangle, ref lpClipRectangle, dwDestinationOrigin, ref lpFill);
 "@ })
-		}
+        }
 
-		public override void SetBufferContents(System.Management.Automation.Host.Rectangle rectangle, BufferCell fill)
-		{
-$(if (!$noConsole){ @"
-			// using a trick: move the buffer out of the screen, the source area gets filled with the char fill.Character
-			if (rectangle.Left >= 0)
-				Console.MoveBufferArea(rectangle.Left, rectangle.Top, rectangle.Right-rectangle.Left+1, rectangle.Bottom-rectangle.Top+1, BufferSize.Width, BufferSize.Height, fill.Character, fill.ForegroundColor, fill.BackgroundColor);
-			else
-			{ // Clear-Host: move all content off the screen
-				Console.MoveBufferArea(0, 0, BufferSize.Width, BufferSize.Height, BufferSize.Width, BufferSize.Height, fill.Character, fill.ForegroundColor, fill.BackgroundColor);
-			}
+        public override void SetBufferContents(System.Management.Automation.Host.Rectangle rectangle, BufferCell fill)
+        {
+ $(if (!$noConsole){ @"
+            if (rectangle.Left >= 0)
+                Console.MoveBufferArea(rectangle.Left, rectangle.Top, rectangle.Right-rectangle.Left+1, rectangle.Bottom-rectangle.Top+1, BufferSize.Width, BufferSize.Height, fill.Character, fill.ForegroundColor, fill.BackgroundColor);
+            else
+            {
+                Console.MoveBufferArea(0, 0, BufferSize.Width, BufferSize.Height, BufferSize.Width, BufferSize.Height, fill.Character, fill.ForegroundColor, fill.BackgroundColor);
+            }
 "@ })
-		}
+        }
 
-		public override void SetBufferContents(Coordinates origin, BufferCell[,] contents)
-		{
-$(if (!$noConsole) { @"
-			IntPtr hStdOut = GetStdHandle(STD_OUTPUT_HANDLE);
-			CHAR_INFO[,] buffer = new CHAR_INFO[contents.GetLength(0), contents.GetLength(1)];
-			COORD buffer_size = new COORD() {X = (short)(contents.GetLength(1)), Y = (short)(contents.GetLength(0))};
-			COORD buffer_index = new COORD() {X = 0, Y = 0};
-			SMALL_RECT screen_rect = new SMALL_RECT() {Left = (short)origin.X, Top = (short)origin.Y, Right = (short)(origin.X + contents.GetLength(1) - 1), Bottom = (short)(origin.Y + contents.GetLength(0) - 1)};
+        public override void SetBufferContents(Coordinates origin, BufferCell[,] contents)
+        {
+ $(if (!$noConsole) { @"
+            IntPtr hStdOut = GetStdHandle(STD_OUTPUT_HANDLE);
+            CHAR_INFO[,] buffer = new CHAR_INFO[contents.GetLength(0), contents.GetLength(1)];
+            COORD buffer_size = new COORD() {X = (short)(contents.GetLength(1)), Y = (short)(contents.GetLength(0))};
+            COORD buffer_index = new COORD() {X = 0, Y = 0};
+            SMALL_RECT screen_rect = new SMALL_RECT() {Left = (short)origin.X, Top = (short)origin.Y, Right = (short)(origin.X + contents.GetLength(1) - 1), Bottom = (short)(origin.Y + contents.GetLength(0) - 1)};
 
-			for (int y = 0; y < contents.GetLength(0); y++)
-				for (int x = 0; x < contents.GetLength(1); x++)
-				{
-					buffer[y,x] = new CHAR_INFO() { AsciiChar = contents[y,x].Character, Attributes = (ushort)((int)(contents[y,x].ForegroundColor) + (int)(contents[y,x].BackgroundColor)*16) };
-				}
+            for (int y = 0; y < contents.GetLength(0); y++)
+                for (int x = 0; x < contents.GetLength(1); x++)
+                {
+                    buffer[y,x] = new CHAR_INFO() { AsciiChar = contents[y,x].Character, Attributes = (ushort)((int)(contents[y,x].ForegroundColor) + (int)(contents[y,x].BackgroundColor)*16) };
+                }
 
-			WriteConsoleOutput(hStdOut, buffer, buffer_size, buffer_index, ref screen_rect);
+            WriteConsoleOutput(hStdOut, buffer, buffer_size, buffer_index, ref screen_rect);
 "@ })
-		}
+        }
 
-		public override Coordinates WindowPosition
-		{
-			get
-			{
-				Coordinates s = new Coordinates();
-$(if (!$noConsole){ @"
-				s.X = Console.WindowLeft;
-				s.Y = Console.WindowTop;
+        public override Coordinates WindowPosition
+        {
+            get
+            {
+                Coordinates s = new Coordinates();
+ $(if (!$noConsole){ @"
+                s.X = Console.WindowLeft;
+                s.Y = Console.WindowTop;
 "@ } else {@"
-				// Dummy-Wert für Winforms
-				s.X = 0;
-				s.Y = 0;
+                s.X = 0;
+                s.Y = 0;
 "@ })
-				return s;
-			}
-			set
-			{
-$(if (!$noConsole){ @"
-				Console.WindowLeft = value.X;
-				Console.WindowTop = value.Y;
+                return s;
+            }
+            set
+            {
+ $(if (!$noConsole){ @"
+                Console.WindowLeft = value.X;
+                Console.WindowTop = value.Y;
 "@ })
-			}
-		}
+            }
+        }
 
-		public override System.Management.Automation.Host.Size WindowSize
-		{
-			get
-			{
-				System.Management.Automation.Host.Size s = new System.Management.Automation.Host.Size();
-$(if (!$noConsole){ @"
-				s.Height = Console.WindowHeight;
-				s.Width = Console.WindowWidth;
+        public override System.Management.Automation.Host.Size WindowSize
+        {
+            get
+            {
+                System.Management.Automation.Host.Size s = new System.Management.Automation.Host.Size();
+ $(if (!$noConsole){ @"
+                s.Height = Console.WindowHeight;
+                s.Width = Console.WindowWidth;
 "@ } else {@"
-				// Dummy-Wert für Winforms
-				s.Height = 50;
-				s.Width = 120;
+                s.Height = 50;
+                s.Width = 120;
 "@ })
-				return s;
-			}
-			set
-			{
-$(if (!$noConsole){ @"
-				Console.WindowWidth = value.Width;
-				Console.WindowHeight = value.Height;
+                return s;
+            }
+            set
+            {
+ $(if (!$noConsole){ @"
+                Console.WindowWidth = value.Width;
+                Console.WindowHeight = value.Height;
 "@ })
-			}
-		}
+            }
+        }
 
-		public override string WindowTitle
-		{
-			get
-			{
-$(if (!$noConsole){ @"
-				return Console.Title;
+        public override string WindowTitle
+        {
+            get
+            {
+ $(if (!$noConsole){ @"
+                return Console.Title;
 "@ } else {@"
-				return GUITitle;
+                return GUITitle;
 "@ })
-			}
-			set
-			{
-$(if (!$noConsole){ @"
-				Console.Title = value;
+            }
+            set
+            {
+ $(if (!$noConsole){ @"
+                Console.Title = value;
 "@ } else {@"
-				GUITitle = value;
+                GUITitle = value;
 "@ })
-			}
-		}
-	}
+            }
+        }
+    }
 
-$(if ($noConsole){ @"
-	public class Input_Box
-	{
-		[DllImport("user32.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.Cdecl)]
-		private static extern IntPtr MB_GetString(uint strId);
+ $(if ($noConsole){ @"
+    public class Input_Box
+    {
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr MB_GetString(uint strId);
 
-		public static DialogResult Show(string strTitle, string strPrompt, ref string strVal, bool blSecure)
-		{
-			// Generate controls
-			Form form = new Form();
-			form.AutoScaleDimensions = new System.Drawing.SizeF(6F, 13F);
-			form.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
-			Label label = new Label();
-			TextBox textBox = new TextBox();
-			Button buttonOk = new Button();
-			Button buttonCancel = new Button();
+        public static DialogResult Show(string strTitle, string strPrompt, ref string strVal, bool blSecure)
+        {
+            Form form = new Form();
+            form.AutoScaleDimensions = new System.Drawing.SizeF(6F, 13F);
+            form.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
+            Label label = new Label();
+            TextBox textBox = new TextBox();
+            Button buttonOk = new Button();
+            Button buttonCancel = new Button();
 
-			// Sizes and positions are defined according to the label
-			// This control has to be finished first
-			if (string.IsNullOrEmpty(strPrompt))
-			{
-				if (blSecure)
-					label.Text = "Secure input:   ";
-				else
-					label.Text = "Input:          ";
-			}
-			else
-				label.Text = strPrompt;
-			label.Location = new Point(9, 19);
-			label.MaximumSize = new System.Drawing.Size(System.Windows.Forms.Screen.FromControl(form).Bounds.Width*5/8 - 18, 0);
-			label.AutoSize = true;
-			// Size of the label is defined not before Add()
-			form.Controls.Add(label);
+            if (string.IsNullOrEmpty(strPrompt))
+            {
+                if (blSecure)
+                    label.Text = "Secure input:   ";
+                else
+                    label.Text = "Input:          ";
+            }
+            else
+                label.Text = strPrompt;
+            label.Location = new Point(9, 19);
+            label.MaximumSize = new System.Drawing.Size(System.Windows.Forms.Screen.FromControl(form).Bounds.Width*5/8 - 18, 0);
+            label.AutoSize = true;
+            form.Controls.Add(label);
 
-			// Generate textbox
-			if (blSecure) textBox.UseSystemPasswordChar = true;
-			textBox.Text = strVal;
-			textBox.SetBounds(12, label.Bottom, label.Right - 12, 20);
+            if (blSecure) textBox.UseSystemPasswordChar = true;
+            textBox.Text = strVal;
+            textBox.SetBounds(12, label.Bottom, label.Right - 12, 20);
 
-			// Generate buttons
-			// get localized "OK"-string
-			string sTextOK = Marshal.PtrToStringUni(MB_GetString(0));
-			if (string.IsNullOrEmpty(sTextOK))
-				buttonOk.Text = "OK";
-			else
-				buttonOk.Text = sTextOK;
+            string sTextOK = Marshal.PtrToStringUni(MB_GetString(0));
+            if (string.IsNullOrEmpty(sTextOK))
+                buttonOk.Text = "OK";
+            else
+                buttonOk.Text = sTextOK;
 
-			// get localized "Cancel"-string
-			string sTextCancel = Marshal.PtrToStringUni(MB_GetString(1));
-			if (string.IsNullOrEmpty(sTextCancel))
-				buttonCancel.Text = "Cancel";
-			else
-				buttonCancel.Text = sTextCancel;
+            string sTextCancel = Marshal.PtrToStringUni(MB_GetString(1));
+            if (string.IsNullOrEmpty(sTextCancel))
+                buttonCancel.Text = "Cancel";
+            else
+                buttonCancel.Text = sTextCancel;
 
-			buttonOk.DialogResult = DialogResult.OK;
-			buttonCancel.DialogResult = DialogResult.Cancel;
-			buttonOk.SetBounds(System.Math.Max(12, label.Right - 158), label.Bottom + 36, 75, 23);
-			buttonCancel.SetBounds(System.Math.Max(93, label.Right - 77), label.Bottom + 36, 75, 23);
+            buttonOk.DialogResult = DialogResult.OK;
+            buttonCancel.DialogResult = DialogResult.Cancel;
+            buttonOk.SetBounds(System.Math.Max(12, label.Right - 158), label.Bottom + 36, 75, 23);
+            buttonCancel.SetBounds(System.Math.Max(93, label.Right - 77), label.Bottom + 36, 75, 23);
 
-			// Configure form
-			form.Text = strTitle;
-			form.ClientSize = new System.Drawing.Size(System.Math.Max(178, label.Right + 10), label.Bottom + 71);
-			form.Controls.AddRange(new Control[] { textBox, buttonOk, buttonCancel });
-			form.FormBorderStyle = FormBorderStyle.FixedDialog;
-			form.StartPosition = FormStartPosition.CenterScreen;
-			try {
-				form.Icon = Icon.ExtractAssociatedIcon(Assembly.GetExecutingAssembly().Location);
-			}
-			catch
-			{ }
-			form.MinimizeBox = false;
-			form.MaximizeBox = false;
-			form.AcceptButton = buttonOk;
-			form.CancelButton = buttonCancel;
+            form.Text = strTitle;
+            form.ClientSize = new System.Drawing.Size(System.Math.Max(178, label.Right + 10), label.Bottom + 71);
+            form.Controls.AddRange(new Control[] { textBox, buttonOk, buttonCancel });
+            form.FormBorderStyle = FormBorderStyle.FixedDialog;
+            form.StartPosition = FormStartPosition.CenterScreen;
+            try {
+                form.Icon = Icon.ExtractAssociatedIcon(Assembly.GetExecutingAssembly().Location);
+            }
+            catch
+            { }
+            form.MinimizeBox = false;
+            form.MaximizeBox = false;
+            form.AcceptButton = buttonOk;
+            form.CancelButton = buttonCancel;
 
-			// Show form and compute results
-			DialogResult dialogResult = form.ShowDialog();
-			strVal = textBox.Text;
-			return dialogResult;
-		}
+            DialogResult dialogResult = form.ShowDialog();
+            strVal = textBox.Text;
+            return dialogResult;
+        }
 
-		public static DialogResult Show(string strTitle, string strPrompt, ref string strVal)
-		{
-			return Show(strTitle, strPrompt, ref strVal, false);
-		}
-	}
+        public static DialogResult Show(string strTitle, string strPrompt, ref string strVal)
+        {
+            return Show(strTitle, strPrompt, ref strVal, false);
+        }
+    }
 
-	public class Choice_Box
-	{
-		public static int Show(System.Collections.ObjectModel.Collection<ChoiceDescription> arrChoice, int intDefault, string strTitle, string strPrompt)
-		{
-			// cancel if array is empty
-			if (arrChoice == null) return -1;
-			if (arrChoice.Count < 1) return -1;
+    public class Choice_Box
+    {
+        public static int Show(System.Collections.ObjectModel.Collection<ChoiceDescription> arrChoice, int intDefault, string strTitle, string strPrompt)
+        {
+            if (arrChoice == null) return -1;
+            if (arrChoice.Count < 1) return -1;
 
-			// Generate controls
-			Form form = new Form();
-			form.AutoScaleDimensions = new System.Drawing.SizeF(6F, 13F);
-			form.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
-			RadioButton[] aradioButton = new RadioButton[arrChoice.Count];
-			ToolTip toolTip = new ToolTip();
-			Button buttonOk = new Button();
+            Form form = new Form();
+            form.AutoScaleDimensions = new System.Drawing.SizeF(6F, 13F);
+            form.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
+            RadioButton[] aradioButton = new RadioButton[arrChoice.Count];
+            ToolTip toolTip = new ToolTip();
+            Button buttonOk = new Button();
 
-			// Sizes and positions are defined according to the label
-			// This control has to be finished first when a prompt is available
-			int iPosY = 19, iMaxX = 0;
-			if (!string.IsNullOrEmpty(strPrompt))
-			{
-				Label label = new Label();
-				label.Text = strPrompt;
-				label.Location = new Point(9, 19);
-				label.MaximumSize = new System.Drawing.Size(System.Windows.Forms.Screen.FromControl(form).Bounds.Width*5/8 - 18, 0);
-				label.AutoSize = true;
-				// erst durch Add() wird die Größe des Labels ermittelt
-				form.Controls.Add(label);
-				iPosY = label.Bottom;
-				iMaxX = label.Right;
-			}
+            int iPosY = 19, iMaxX = 0;
+            if (!string.IsNullOrEmpty(strPrompt))
+            {
+                Label label = new Label();
+                label.Text = strPrompt;
+                label.Location = new Point(9, 19);
+                label.MaximumSize = new System.Drawing.Size(System.Windows.Forms.Screen.FromControl(form).Bounds.Width*5/8 - 18, 0);
+                label.AutoSize = true;
+                form.Controls.Add(label);
+                iPosY = label.Bottom;
+                iMaxX = label.Right;
+            }
 
-			// An den Radiobuttons orientieren sich die weiteren Größen und Positionen
-			// Diese Controls also jetzt fertigstellen
-			int Counter = 0;
-			int tempWidth = System.Windows.Forms.Screen.FromControl(form).Bounds.Width*5/8 - 18;
-			foreach (ChoiceDescription sAuswahl in arrChoice)
-			{
-				aradioButton[Counter] = new RadioButton();
-				aradioButton[Counter].Text = sAuswahl.Label;
-				if (Counter == intDefault)
-					aradioButton[Counter].Checked = true;
-				aradioButton[Counter].Location = new Point(9, iPosY);
-				aradioButton[Counter].AutoSize = true;
-				// erst durch Add() wird die Größe des Labels ermittelt
-				form.Controls.Add(aradioButton[Counter]);
-				if (aradioButton[Counter].Width > tempWidth)
-				{ // radio field to wide for screen -> make two lines
-					int tempHeight = aradioButton[Counter].Height;
-					aradioButton[Counter].Height = tempHeight*(1 + (aradioButton[Counter].Width-1)/tempWidth);
-					aradioButton[Counter].Width = tempWidth;
-					aradioButton[Counter].AutoSize = false;
-				}
-				iPosY = aradioButton[Counter].Bottom;
-				if (aradioButton[Counter].Right > iMaxX) { iMaxX = aradioButton[Counter].Right; }
-				if (!string.IsNullOrEmpty(sAuswahl.HelpMessage))
-					 toolTip.SetToolTip(aradioButton[Counter], sAuswahl.HelpMessage);
-				Counter++;
-			}
+            int Counter = 0;
+            int tempWidth = System.Windows.Forms.Screen.FromControl(form).Bounds.Width*5/8 - 18;
+            foreach (ChoiceDescription sAuswahl in arrChoice)
+            {
+                aradioButton[Counter] = new RadioButton();
+                aradioButton[Counter].Text = sAuswahl.Label;
+                if (Counter == intDefault)
+                    aradioButton[Counter].Checked = true;
+                aradioButton[Counter].Location = new Point(9, iPosY);
+                aradioButton[Counter].AutoSize = true;
+                form.Controls.Add(aradioButton[Counter]);
+                if (aradioButton[Counter].Width > tempWidth)
+                {
+                    int tempHeight = aradioButton[Counter].Height;
+                    aradioButton[Counter].Height = tempHeight*(1 + (aradioButton[Counter].Width-1)/tempWidth);
+                    aradioButton[Counter].Width = tempWidth;
+                    aradioButton[Counter].AutoSize = false;
+                }
+                iPosY = aradioButton[Counter].Bottom;
+                if (aradioButton[Counter].Right > iMaxX) { iMaxX = aradioButton[Counter].Right; }
+                if (!string.IsNullOrEmpty(sAuswahl.HelpMessage))
+                     toolTip.SetToolTip(aradioButton[Counter], sAuswahl.HelpMessage);
+                Counter++;
+            }
 
-			// Tooltip auch anzeigen, wenn Parent-Fenster inaktiv ist
-			toolTip.ShowAlways = true;
+            toolTip.ShowAlways = true;
 
-			// Button erzeugen
-			buttonOk.Text = "OK";
-			buttonOk.DialogResult = DialogResult.OK;
-			buttonOk.SetBounds(System.Math.Max(12, iMaxX - 77), iPosY + 36, 75, 23);
+            buttonOk.Text = "OK";
+            buttonOk.DialogResult = DialogResult.OK;
+            buttonOk.SetBounds(System.Math.Max(12, iMaxX - 77), iPosY + 36, 75, 23);
 
-			// configure form
-			if (string.IsNullOrEmpty(strTitle))
-				form.Text = System.AppDomain.CurrentDomain.FriendlyName;
-			else
-				form.Text = strTitle;
-			form.ClientSize = new System.Drawing.Size(System.Math.Max(178, iMaxX + 10), iPosY + 71);
-			form.Controls.Add(buttonOk);
-			form.FormBorderStyle = FormBorderStyle.FixedDialog;
-			form.StartPosition = FormStartPosition.CenterScreen;
-			try {
-				form.Icon = Icon.ExtractAssociatedIcon(Assembly.GetExecutingAssembly().Location);
-			}
-			catch
-			{ }
-			form.MinimizeBox = false;
-			form.MaximizeBox = false;
-			form.AcceptButton = buttonOk;
+            if (string.IsNullOrEmpty(strTitle))
+                form.Text = System.AppDomain.CurrentDomain.FriendlyName;
+            else
+                form.Text = strTitle;
+            form.ClientSize = new System.Drawing.Size(System.Math.Max(178, iMaxX + 10), iPosY + 71);
+            form.Controls.Add(buttonOk);
+            form.FormBorderStyle = FormBorderStyle.FixedDialog;
+            form.StartPosition = FormStartPosition.CenterScreen;
+            try {
+                form.Icon = Icon.ExtractAssociatedIcon(Assembly.GetExecutingAssembly().Location);
+            }
+            catch
+            { }
+            form.MinimizeBox = false;
+            form.MaximizeBox = false;
+            form.AcceptButton = buttonOk;
 
-			// show and compute form
-			if (form.ShowDialog() == DialogResult.OK)
-			{ int iRueck = -1;
-				for (Counter = 0; Counter < arrChoice.Count; Counter++)
-				{
-					if (aradioButton[Counter].Checked == true)
-					{ iRueck = Counter; }
-				}
-				return iRueck;
-			}
-			else
-				return -1;
-		}
-	}
+            if (form.ShowDialog() == DialogResult.OK)
+            { int iRueck = -1;
+                for (Counter = 0; Counter < arrChoice.Count; Counter++)
+                {
+                    if (aradioButton[Counter].Checked == true)
+                    { iRueck = Counter; }
+                }
+                return iRueck;
+            }
+            else
+                return -1;
+        }
+    }
 
-	public class ReadKey_Box
-	{
-		[DllImport("user32.dll")]
-		public static extern int ToUnicode(uint wVirtKey, uint wScanCode, byte[] lpKeyState,
-			[Out, MarshalAs(UnmanagedType.LPWStr, SizeConst = 64)] System.Text.StringBuilder pwszBuff,
-			int cchBuff, uint wFlags);
+    public class ReadKey_Box
+    {
+        [DllImport("user32.dll")]
+        public static extern int ToUnicode(uint wVirtKey, uint wScanCode, byte[] lpKeyState,
+            [Out, MarshalAs(UnmanagedType.LPWStr, SizeConst = 64)] System.Text.StringBuilder pwszBuff,
+            int cchBuff, uint wFlags);
 
-		static string GetCharFromKeys(Keys keys, bool blShift, bool blAltGr)
-		{
-			System.Text.StringBuilder buffer = new System.Text.StringBuilder(64);
-			byte[] keyboardState = new byte[256];
-			if (blShift)
-			{ keyboardState[(int) Keys.ShiftKey] = 0xff; }
-			if (blAltGr)
-			{ keyboardState[(int) Keys.ControlKey] = 0xff;
-				keyboardState[(int) Keys.Menu] = 0xff;
-			}
-			if (ToUnicode((uint) keys, 0, keyboardState, buffer, 64, 0) >= 1)
-				return buffer.ToString();
-			else
-				return "\0";
-		}
+        static string GetCharFromKeys(Keys keys, bool blShift, bool blAltGr)
+        {
+            System.Text.StringBuilder buffer = new System.Text.StringBuilder(64);
+            byte[] keyboardState = new byte[256];
+            if (blShift)
+            { keyboardState[(int) Keys.ShiftKey] = 0xff; }
+            if (blAltGr)
+            { keyboardState[(int) Keys.ControlKey] = 0xff;
+                keyboardState[(int) Keys.Menu] = 0xff;
+            }
+            if (ToUnicode((uint) keys, 0, keyboardState, buffer, 64, 0) >= 1)
+                return buffer.ToString();
+            else
+                return "\0";
+        }
 
-		class Keyboard_Form : Form
-		{
-			public Keyboard_Form()
-			{
-				this.AutoScaleDimensions = new System.Drawing.SizeF(6F, 13F);
-				this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
-				this.KeyDown += new KeyEventHandler(Keyboard_Form_KeyDown);
-				this.KeyUp += new KeyEventHandler(Keyboard_Form_KeyUp);
-			}
+        class Keyboard_Form : Form
+        {
+            public Keyboard_Form()
+            {
+                this.AutoScaleDimensions = new System.Drawing.SizeF(6F, 13F);
+                this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
+                this.KeyDown += new KeyEventHandler(Keyboard_Form_KeyDown);
+                this.KeyUp += new KeyEventHandler(Keyboard_Form_KeyUp);
+            }
 
-			// check for KeyDown or KeyUp?
-			public bool checkKeyDown = true;
-			// key code for pressed key
-			public KeyInfo keyinfo;
+            public bool checkKeyDown = true;
+            public KeyInfo keyinfo;
 
-			void Keyboard_Form_KeyDown(object sender, KeyEventArgs e)
-			{
-				if (checkKeyDown)
-				{ // store key info
-					keyinfo.VirtualKeyCode = e.KeyValue;
-					keyinfo.Character = GetCharFromKeys(e.KeyCode, e.Shift, e.Alt & e.Control)[0];
-					keyinfo.KeyDown = false;
-					keyinfo.ControlKeyState = 0;
-					if (e.Alt) { keyinfo.ControlKeyState = ControlKeyStates.LeftAltPressed | ControlKeyStates.RightAltPressed; }
-					if (e.Control)
-					{ keyinfo.ControlKeyState |= ControlKeyStates.LeftCtrlPressed | ControlKeyStates.RightCtrlPressed;
-						if (!e.Alt)
-						{ if (e.KeyValue > 64 && e.KeyValue < 96) keyinfo.Character = (char)(e.KeyValue - 64); }
-					}
-					if (e.Shift) { keyinfo.ControlKeyState |= ControlKeyStates.ShiftPressed; }
-					if ((e.Modifiers & System.Windows.Forms.Keys.CapsLock) > 0) { keyinfo.ControlKeyState |= ControlKeyStates.CapsLockOn; }
-					if ((e.Modifiers & System.Windows.Forms.Keys.NumLock) > 0) { keyinfo.ControlKeyState |= ControlKeyStates.NumLockOn; }
-					// and close the form
-					this.Close();
-				}
-			}
+            void Keyboard_Form_KeyDown(object sender, KeyEventArgs e)
+            {
+                if (checkKeyDown)
+                {
+                    keyinfo.VirtualKeyCode = e.KeyValue;
+                    keyinfo.Character = GetCharFromKeys(e.KeyCode, e.Shift, e.Alt & e.Control)[0];
+                    keyinfo.KeyDown = false;
+                    keyinfo.ControlKeyState = 0;
+                    if (e.Alt) { keyinfo.ControlKeyState = ControlKeyStates.LeftAltPressed | ControlKeyStates.RightAltPressed; }
+                    if (e.Control)
+                    { keyinfo.ControlKeyState |= ControlKeyStates.LeftCtrlPressed | ControlKeyStates.RightCtrlPressed;
+                        if (!e.Alt)
+                        { if (e.KeyValue > 64 && e.KeyValue < 96) keyinfo.Character = (char)(e.KeyValue - 64); }
+                    }
+                    if (e.Shift) { keyinfo.ControlKeyState |= ControlKeyStates.ShiftPressed; }
+                    if ((e.Modifiers & System.Windows.Forms.Keys.CapsLock) > 0) { keyinfo.ControlKeyState |= ControlKeyStates.CapsLockOn; }
+                    if ((e.Modifiers & System.Windows.Forms.Keys.NumLock) > 0) { keyinfo.ControlKeyState |= ControlKeyStates.NumLockOn; }
+                    this.Close();
+                }
+            }
 
-			void Keyboard_Form_KeyUp(object sender, KeyEventArgs e)
-			{
-				if (!checkKeyDown)
-				{ // store key info
-					keyinfo.VirtualKeyCode = e.KeyValue;
-					keyinfo.Character = GetCharFromKeys(e.KeyCode, e.Shift, e.Alt & e.Control)[0];
-					keyinfo.KeyDown = true;
-					keyinfo.ControlKeyState = 0;
-					if (e.Alt) { keyinfo.ControlKeyState = ControlKeyStates.LeftAltPressed | ControlKeyStates.RightAltPressed; }
-					if (e.Control)
-					{ keyinfo.ControlKeyState |= ControlKeyStates.LeftCtrlPressed | ControlKeyStates.RightCtrlPressed;
-						if (!e.Alt)
-						{ if (e.KeyValue > 64 && e.KeyValue < 96) keyinfo.Character = (char)(e.KeyValue - 64); }
-					}
-					if (e.Shift) { keyinfo.ControlKeyState |= ControlKeyStates.ShiftPressed; }
-					if ((e.Modifiers & System.Windows.Forms.Keys.CapsLock) > 0) { keyinfo.ControlKeyState |= ControlKeyStates.CapsLockOn; }
-					if ((e.Modifiers & System.Windows.Forms.Keys.NumLock) > 0) { keyinfo.ControlKeyState |= ControlKeyStates.NumLockOn; }
-					// and close the form
-					this.Close();
-				}
-			}
-		}
+            void Keyboard_Form_KeyUp(object sender, KeyEventArgs e)
+            {
+                if (!checkKeyDown)
+                {
+                    keyinfo.VirtualKeyCode = e.KeyValue;
+                    keyinfo.Character = GetCharFromKeys(e.KeyCode, e.Shift, e.Alt & e.Control)[0];
+                    keyinfo.KeyDown = true;
+                    keyinfo.ControlKeyState = 0;
+                    if (e.Alt) { keyinfo.ControlKeyState = ControlKeyStates.LeftAltPressed | ControlKeyStates.RightAltPressed; }
+                    if (e.Control)
+                    { keyinfo.ControlKeyState |= ControlKeyStates.LeftCtrlPressed | ControlKeyStates.RightCtrlPressed;
+                        if (!e.Alt)
+                        { if (e.KeyValue > 64 && e.KeyValue < 96) keyinfo.Character = (char)(e.KeyValue - 64); }
+                    }
+                    if (e.Shift) { keyinfo.ControlKeyState |= ControlKeyStates.ShiftPressed; }
+                    if ((e.Modifiers & System.Windows.Forms.Keys.CapsLock) > 0) { keyinfo.ControlKeyState |= ControlKeyStates.CapsLockOn; }
+                    if ((e.Modifiers & System.Windows.Forms.Keys.NumLock) > 0) { keyinfo.ControlKeyState |= ControlKeyStates.NumLockOn; }
+                    this.Close();
+                }
+            }
+        }
 
-		public static KeyInfo Show(string strTitle, string strPrompt, bool blIncludeKeyDown)
-		{
-			// Controls erzeugen
-			Keyboard_Form form = new Keyboard_Form();
-			Label label = new Label();
+        public static KeyInfo Show(string strTitle, string strPrompt, bool blIncludeKeyDown)
+        {
+            Keyboard_Form form = new Keyboard_Form();
+            Label label = new Label();
 
-			// Am Label orientieren sich die Größen und Positionen
-			// Dieses Control also zuerst fertigstellen
-			if (string.IsNullOrEmpty(strPrompt))
-			{
-					label.Text = "Press a key";
-			}
-			else
-				label.Text = strPrompt;
-			label.Location = new Point(9, 19);
-			label.MaximumSize = new System.Drawing.Size(System.Windows.Forms.Screen.FromControl(form).Bounds.Width*5/8 - 18, 0);
-			label.AutoSize = true;
-			// erst durch Add() wird die Größe des Labels ermittelt
-			form.Controls.Add(label);
+            if (string.IsNullOrEmpty(strPrompt))
+            {
+                    label.Text = "Press a key";
+            }
+            else
+                label.Text = strPrompt;
+            label.Location = new Point(9, 19);
+            label.MaximumSize = new System.Drawing.Size(System.Windows.Forms.Screen.FromControl(form).Bounds.Width*5/8 - 18, 0);
+            label.AutoSize = true;
+            form.Controls.Add(label);
 
-			// configure form
-			form.Text = strTitle;
-			form.ClientSize = new System.Drawing.Size(System.Math.Max(178, label.Right + 10), label.Bottom + 55);
-			form.FormBorderStyle = FormBorderStyle.FixedDialog;
-			form.StartPosition = FormStartPosition.CenterScreen;
-			try {
-				form.Icon = Icon.ExtractAssociatedIcon(Assembly.GetExecutingAssembly().Location);
-			}
-			catch
-			{ }
-			form.MinimizeBox = false;
-			form.MaximizeBox = false;
+            form.Text = strTitle;
+            form.ClientSize = new System.Drawing.Size(System.Math.Max(178, label.Right + 10), label.Bottom + 55);
+            form.FormBorderStyle = FormBorderStyle.FixedDialog;
+            form.StartPosition = FormStartPosition.CenterScreen;
+            try {
+                form.Icon = Icon.ExtractAssociatedIcon(Assembly.GetExecutingAssembly().Location);
+            }
+            catch
+            { }
+            form.MinimizeBox = false;
+            form.MaximizeBox = false;
 
-			// show and compute form
-			form.checkKeyDown = blIncludeKeyDown;
-			form.ShowDialog();
-			return form.keyinfo;
-		}
-	}
+            form.checkKeyDown = blIncludeKeyDown;
+            form.ShowDialog();
+            return form.keyinfo;
+        }
+    }
 
-	public class Progress_Form : Form
-	{
-		private ConsoleColor ProgressBarColor = ConsoleColor.DarkCyan;
-		private string WindowTitle = "";
+    public class Progress_Form : Form
+    {
+        private ConsoleColor ProgressBarColor = ConsoleColor.DarkCyan;
+        private string WindowTitle = "";
 
-$(if (!$noVisualStyles) {@"
-		private System.Timers.Timer timer = new System.Timers.Timer();
-		private int barNumber = -1;
-		private int barValue = -1;
-		private bool inTick = false;
+ $(if (!$noVisualStyles) {@"
+        private System.Timers.Timer timer = new System.Timers.Timer();
+        private int barNumber = -1;
+        private int barValue = -1;
+        private bool inTick = false;
 "@ })
 
-		struct Progress_Data
-		{
-			internal Label lbActivity;
-			internal Label lbStatus;
-			internal ProgressBar objProgressBar;
-			internal Label lbRemainingTime;
-			internal Label lbOperation;
-			internal int ActivityId;
-			internal int ParentActivityId;
-			internal int Depth;
-		};
+        struct Progress_Data
+        {
+            internal Label lbActivity;
+            internal Label lbStatus;
+            internal ProgressBar objProgressBar;
+            internal Label lbRemainingTime;
+            internal Label lbOperation;
+            internal int ActivityId;
+            internal int ParentActivityId;
+            internal int Depth;
+        };
 
-		private List<Progress_Data> progressDataList = new List<Progress_Data>();
+        private List<Progress_Data> progressDataList = new List<Progress_Data>();
 
-		private Color DrawingColor(ConsoleColor color)
-		{  // convert ConsoleColor to System.Drawing.Color
-			switch (color)
-			{
-				case ConsoleColor.Black: return Color.Black;
-				case ConsoleColor.Blue: return Color.Blue;
-				case ConsoleColor.Cyan: return Color.Cyan;
-				case ConsoleColor.DarkBlue: return ColorTranslator.FromHtml("#000080");
-				case ConsoleColor.DarkGray: return ColorTranslator.FromHtml("#808080");
-				case ConsoleColor.DarkGreen: return ColorTranslator.FromHtml("#008000");
-				case ConsoleColor.DarkCyan: return ColorTranslator.FromHtml("#008080");
-				case ConsoleColor.DarkMagenta: return ColorTranslator.FromHtml("#800080");
-				case ConsoleColor.DarkRed: return ColorTranslator.FromHtml("#800000");
-				case ConsoleColor.DarkYellow: return ColorTranslator.FromHtml("#808000");
-				case ConsoleColor.Gray: return ColorTranslator.FromHtml("#C0C0C0");
-				case ConsoleColor.Green: return ColorTranslator.FromHtml("#00FF00");
-				case ConsoleColor.Magenta: return Color.Magenta;
-				case ConsoleColor.Red: return Color.Red;
-				case ConsoleColor.White: return Color.White;
-				default: return Color.Yellow;
-			}
-		}
+        private Color DrawingColor(ConsoleColor color)
+        {
+            switch (color)
+            {
+                case ConsoleColor.Black: return Color.Black;
+                case ConsoleColor.Blue: return Color.Blue;
+                case ConsoleColor.Cyan: return Color.Cyan;
+                case ConsoleColor.DarkBlue: return ColorTranslator.FromHtml("#000080");
+                case ConsoleColor.DarkGray: return ColorTranslator.FromHtml("#808080");
+                case ConsoleColor.DarkGreen: return ColorTranslator.FromHtml("#008000");
+                case ConsoleColor.DarkCyan: return ColorTranslator.FromHtml("#008080");
+                case ConsoleColor.DarkMagenta: return ColorTranslator.FromHtml("#800080");
+                case ConsoleColor.DarkRed: return ColorTranslator.FromHtml("#800000");
+                case ConsoleColor.DarkYellow: return ColorTranslator.FromHtml("#808000");
+                case ConsoleColor.Gray: return ColorTranslator.FromHtml("#C0C0C0");
+                case ConsoleColor.Green: return ColorTranslator.FromHtml("#00FF00");
+                case ConsoleColor.Magenta: return Color.Magenta;
+                case ConsoleColor.Red: return Color.Red;
+                case ConsoleColor.White: return Color.White;
+                default: return Color.Yellow;
+            }
+        }
 
-		public Progress_Form()
-		{
-			InitializeComponent();
-		}
+        public Progress_Form()
+        {
+            InitializeComponent();
+        }
 
-		public Progress_Form(ConsoleColor BarColor)
-		{
-			ProgressBarColor = BarColor;
-			InitializeComponent();
-		}
+        public Progress_Form(ConsoleColor BarColor)
+        {
+            ProgressBarColor = BarColor;
+            InitializeComponent();
+        }
 
-		public Progress_Form(string Title, ConsoleColor BarColor)
-		{
-			WindowTitle = Title;
-			ProgressBarColor = BarColor;
-			InitializeComponent();
-		}
+        public Progress_Form(string Title, ConsoleColor BarColor)
+        {
+            WindowTitle = Title;
+            ProgressBarColor = BarColor;
+            InitializeComponent();
+        }
 
-		private void InitializeComponent()
-		{
-			this.SuspendLayout();
+        private void InitializeComponent()
+        {
+            this.SuspendLayout();
 
-			this.AutoScaleDimensions = new System.Drawing.SizeF(6F, 13F);
-			this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
+            this.AutoScaleDimensions = new System.Drawing.SizeF(6F, 13F);
+            this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
 
-			this.AutoScroll = true;
-			this.Text = WindowTitle;
-			this.Height = 147;
-			this.Width = 800;
-			this.BackColor = Color.White;
-			this.FormBorderStyle = FormBorderStyle.FixedSingle;
-			this.MinimizeBox = false;
-			this.MaximizeBox = false;
-			this.ControlBox = false;
-			this.StartPosition = FormStartPosition.CenterScreen;
+            this.AutoScroll = true;
+            this.Text = WindowTitle;
+            this.Height = 147;
+            this.Width = 800;
+            this.BackColor = Color.White;
+            this.FormBorderStyle = FormBorderStyle.FixedSingle;
+            this.MinimizeBox = false;
+            this.MaximizeBox = false;
+            this.ControlBox = false;
+            this.StartPosition = FormStartPosition.CenterScreen;
 
-			this.ResumeLayout();
-$(if (!$noVisualStyles) {@"
-			timer.Elapsed += new System.Timers.ElapsedEventHandler(TimeTick);
-			timer.Interval = 50; // milliseconds
-			timer.AutoReset = true;
-			timer.Start();
+            this.ResumeLayout();
+ $(if (!$noVisualStyles) {@"
+            timer.Elapsed += new System.Timers.ElapsedEventHandler(TimeTick);
+            timer.Interval = 50;
+            timer.AutoReset = true;
+            timer.Start();
 "@ })
-		}
-$(if (!$noVisualStyles) {@"
-		private void TimeTick(object source, System.Timers.ElapsedEventArgs e)
-		{ // worker function that is called by timer event
-
-			if (inTick) return;
-			inTick = true;
-			if (barNumber >= 0)
-			{
-				if (barValue >= 0)
-				{
-					progressDataList[barNumber].objProgressBar.Value = barValue;
-					barValue = -1;
-				}
-				progressDataList[barNumber].objProgressBar.Refresh();
-			}
-			inTick = false;
-		}
+        }
+ $(if (!$noVisualStyles) {@"
+        private void TimeTick(object source, System.Timers.ElapsedEventArgs e)
+        {
+            if (inTick) return;
+            inTick = true;
+            if (barNumber >= 0)
+            {
+                if (barValue >= 0)
+                {
+                    progressDataList[barNumber].objProgressBar.Value = barValue;
+                    barValue = -1;
+                }
+                progressDataList[barNumber].objProgressBar.Refresh();
+            }
+            inTick = false;
+        }
 "@ })
 
-		private void AddBar(ref Progress_Data pd, int position)
-		{
-			// Create Label
-			pd.lbActivity = new Label();
-			pd.lbActivity.Left = 5;
-			pd.lbActivity.Top = 104*position + 10;
-			pd.lbActivity.Width = 800 - 20;
-			pd.lbActivity.Height = 16;
-			pd.lbActivity.Font = new Font(pd.lbActivity.Font, FontStyle.Bold);
-			pd.lbActivity.Text = "";
-			// Add Label to Form
-			this.Controls.Add(pd.lbActivity);
+        private void AddBar(ref Progress_Data pd, int position)
+        {
+            pd.lbActivity = new Label();
+            pd.lbActivity.Left = 5;
+            pd.lbActivity.Top = 104*position + 10;
+            pd.lbActivity.Width = 800 - 20;
+            pd.lbActivity.Height = 16;
+            pd.lbActivity.Font = new Font(pd.lbActivity.Font, FontStyle.Bold);
+            pd.lbActivity.Text = "";
+            this.Controls.Add(pd.lbActivity);
 
-			// Create Label
-			pd.lbStatus = new Label();
-			pd.lbStatus.Left = 25;
-			pd.lbStatus.Top = 104*position + 26;
-			pd.lbStatus.Width = 800 - 40;
-			pd.lbStatus.Height = 16;
-			pd.lbStatus.Text = "";
-			// Add Label to Form
-			this.Controls.Add(pd.lbStatus);
+            pd.lbStatus = new Label();
+            pd.lbStatus.Left = 25;
+            pd.lbStatus.Top = 104*position + 26;
+            pd.lbStatus.Width = 800 - 40;
+            pd.lbStatus.Height = 16;
+            pd.lbStatus.Text = "";
+            this.Controls.Add(pd.lbStatus);
 
-			// Create ProgressBar
-			pd.objProgressBar = new ProgressBar();
-			pd.objProgressBar.Value = 0;
-$(if ($noVisualStyles) {@"
-			pd.objProgressBar.Style = ProgressBarStyle.Continuous;
+            pd.objProgressBar = new ProgressBar();
+            pd.objProgressBar.Value = 0;
+ $(if ($noVisualStyles) {@"
+            pd.objProgressBar.Style = ProgressBarStyle.Continuous;
 "@ } else {@"
-			pd.objProgressBar.Style = ProgressBarStyle.Blocks;
+            pd.objProgressBar.Style = ProgressBarStyle.Blocks;
 "@ })
-			pd.objProgressBar.ForeColor = DrawingColor(ProgressBarColor);
-			if (pd.Depth < 15)
-			{
-				pd.objProgressBar.Size = new System.Drawing.Size(800 - 60 - 30*pd.Depth, 20);
-				pd.objProgressBar.Left = 25 + 30*pd.Depth;
-			}
-			else
-			{
-				pd.objProgressBar.Size = new System.Drawing.Size(800 - 60 - 450, 20);
-				pd.objProgressBar.Left = 25 + 450;
-			}
-			pd.objProgressBar.Top = 104*position + 47;
-			// Add ProgressBar to Form
-			this.Controls.Add(pd.objProgressBar);
+            pd.objProgressBar.ForeColor = DrawingColor(ProgressBarColor);
+            if (pd.Depth < 15)
+            {
+                pd.objProgressBar.Size = new System.Drawing.Size(800 - 60 - 30*pd.Depth, 20);
+                pd.objProgressBar.Left = 25 + 30*pd.Depth;
+            }
+            else
+            {
+                pd.objProgressBar.Size = new System.Drawing.Size(800 - 60 - 450, 20);
+                pd.objProgressBar.Left = 25 + 450;
+            }
+            pd.objProgressBar.Top = 104*position + 47;
+            this.Controls.Add(pd.objProgressBar);
 
-			// Create Label
-			pd.lbRemainingTime = new Label();
-			pd.lbRemainingTime.Left = 5;
-			pd.lbRemainingTime.Top = 104*position + 72;
-			pd.lbRemainingTime.Width = 800 - 20;
-			pd.lbRemainingTime.Height = 16;
-			pd.lbRemainingTime.Text = "";
-			// Add Label to Form
-			this.Controls.Add(pd.lbRemainingTime);
+            pd.lbRemainingTime = new Label();
+            pd.lbRemainingTime.Left = 5;
+            pd.lbRemainingTime.Top = 104*position + 72;
+            pd.lbRemainingTime.Width = 800 - 20;
+            pd.lbRemainingTime.Height = 16;
+            pd.lbRemainingTime.Text = "";
+            this.Controls.Add(pd.lbRemainingTime);
 
-			// Create Label
-			pd.lbOperation = new Label();
-			pd.lbOperation.Left = 25;
-			pd.lbOperation.Top = 104*position + 88;
-			pd.lbOperation.Width = 800 - 40;
-			pd.lbOperation.Height = 16;
-			pd.lbOperation.Text = "";
-			// Add Label to Form
-			this.Controls.Add(pd.lbOperation);
-		}
+            pd.lbOperation = new Label();
+            pd.lbOperation.Left = 25;
+            pd.lbOperation.Top = 104*position + 88;
+            pd.lbOperation.Width = 800 - 40;
+            pd.lbOperation.Height = 16;
+            pd.lbOperation.Text = "";
+            this.Controls.Add(pd.lbOperation);
+        }
 
-		public int GetCount()
-		{
-			return progressDataList.Count;
-		}
+        public int GetCount()
+        {
+            return progressDataList.Count;
+        }
 
-		public void Update(ProgressRecord objRecord)
-		{
-			if (objRecord == null)
-				return;
+        public void Update(ProgressRecord objRecord)
+        {
+            if (objRecord == null)
+                return;
 
-			int currentProgress = -1;
-			for (int i = 0; i < progressDataList.Count; i++)
-			{
-				if (progressDataList[i].ActivityId == objRecord.ActivityId)
-				{ currentProgress = i;
-					break;
-				}
-			}
+            int currentProgress = -1;
+            for (int i = 0; i < progressDataList.Count; i++)
+            {
+                if (progressDataList[i].ActivityId == objRecord.ActivityId)
+                { currentProgress = i;
+                    break;
+                }
+            }
 
-			if (objRecord.RecordType == ProgressRecordType.Completed)
-			{
-				if (currentProgress >= 0)
-				{
-$(if (!$noVisualStyles) {@"
-					if (barNumber == currentProgress) barNumber = -1;
+            if (objRecord.RecordType == ProgressRecordType.Completed)
+            {
+                if (currentProgress >= 0)
+                {
+ $(if (!$noVisualStyles) {@"
+                    if (barNumber == currentProgress) barNumber = -1;
 "@ })
-					this.Controls.Remove(progressDataList[currentProgress].lbActivity);
-					this.Controls.Remove(progressDataList[currentProgress].lbStatus);
-					this.Controls.Remove(progressDataList[currentProgress].objProgressBar);
-					this.Controls.Remove(progressDataList[currentProgress].lbRemainingTime);
-					this.Controls.Remove(progressDataList[currentProgress].lbOperation);
+                    this.Controls.Remove(progressDataList[currentProgress].lbActivity);
+                    this.Controls.Remove(progressDataList[currentProgress].lbStatus);
+                    this.Controls.Remove(progressDataList[currentProgress].objProgressBar);
+                    this.Controls.Remove(progressDataList[currentProgress].lbRemainingTime);
+                    this.Controls.Remove(progressDataList[currentProgress].lbOperation);
 
-					progressDataList[currentProgress].lbActivity.Dispose();
-					progressDataList[currentProgress].lbStatus.Dispose();
-					progressDataList[currentProgress].objProgressBar.Dispose();
-					progressDataList[currentProgress].lbRemainingTime.Dispose();
-					progressDataList[currentProgress].lbOperation.Dispose();
+                    progressDataList[currentProgress].lbActivity.Dispose();
+                    progressDataList[currentProgress].lbStatus.Dispose();
+                    progressDataList[currentProgress].objProgressBar.Dispose();
+                    progressDataList[currentProgress].lbRemainingTime.Dispose();
+                    progressDataList[currentProgress].lbOperation.Dispose();
 
-					progressDataList.RemoveAt(currentProgress);
-				}
+                    progressDataList.RemoveAt(currentProgress);
+                }
 
-				if (progressDataList.Count == 0)
-				{
-$(if (!$noVisualStyles) {@"
-					timer.Stop();
-					timer.Dispose();
+                if (progressDataList.Count == 0)
+                {
+ $(if (!$noVisualStyles) {@"
+                    timer.Stop();
+                    timer.Dispose();
 "@ })
-					this.Close();
-					return;
-				}
+                    this.Close();
+                    return;
+                }
 
-				if (currentProgress < 0) return;
+                if (currentProgress < 0) return;
 
-				for (int i = currentProgress; i < progressDataList.Count; i++)
-				{
-					progressDataList[i].lbActivity.Top = 104*i + 10;
-					progressDataList[i].lbStatus.Top = 104*i + 26;
-					progressDataList[i].objProgressBar.Top = 104*i + 47;
-					progressDataList[i].lbRemainingTime.Top = 104*i + 72;
-					progressDataList[i].lbOperation.Top = 104*i + 88;
-				}
+                for (int i = currentProgress; i < progressDataList.Count; i++)
+                {
+                    progressDataList[i].lbActivity.Top = 104*i + 10;
+                    progressDataList[i].lbStatus.Top = 104*i + 26;
+                    progressDataList[i].objProgressBar.Top = 104*i + 47;
+                    progressDataList[i].lbRemainingTime.Top = 104*i + 72;
+                    progressDataList[i].lbOperation.Top = 104*i + 88;
+                }
 
-				if (104*progressDataList.Count + 43 <= System.Windows.Forms.Screen.FromControl(this).Bounds.Height)
-				{
-					this.Height = 104*progressDataList.Count + 43;
-					this.Location = new Point((System.Windows.Forms.Screen.FromControl(this).Bounds.Width - this.Width)/2, (System.Windows.Forms.Screen.FromControl(this).Bounds.Height - this.Height)/2);
-				}
-				else
-				{
-					this.Height = System.Windows.Forms.Screen.FromControl(this).Bounds.Height;
-					this.Location = new Point((System.Windows.Forms.Screen.FromControl(this).Bounds.Width - this.Width)/2, 0);
-				}
+                if (104*progressDataList.Count + 43 <= System.Windows.Forms.Screen.FromControl(this).Bounds.Height)
+                {
+                    this.Height = 104*progressDataList.Count + 43;
+                    this.Location = new Point((System.Windows.Forms.Screen.FromControl(this).Bounds.Width - this.Width)/2, (System.Windows.Forms.Screen.FromControl(this).Bounds.Height - this.Height)/2);
+                }
+                else
+                {
+                    this.Height = System.Windows.Forms.Screen.FromControl(this).Bounds.Height;
+                    this.Location = new Point((System.Windows.Forms.Screen.FromControl(this).Bounds.Width - this.Width)/2, 0);
+                }
 
-				return;
-			}
+                return;
+            }
 
-			if (currentProgress < 0)
-			{
-				Progress_Data pd = new Progress_Data();
-				pd.ActivityId = objRecord.ActivityId;
-				pd.ParentActivityId = objRecord.ParentActivityId;
-				pd.Depth = 0;
+            if (currentProgress < 0)
+            {
+                Progress_Data pd = new Progress_Data();
+                pd.ActivityId = objRecord.ActivityId;
+                pd.ParentActivityId = objRecord.ParentActivityId;
+                pd.Depth = 0;
 
-				int nextid = -1;
-				int parentid = -1;
-				if (pd.ParentActivityId >= 0)
-				{
-					for (int i = 0; i < progressDataList.Count; i++)
-					{
-						if (progressDataList[i].ActivityId == pd.ParentActivityId)
-						{ parentid = i;
-							break;
-						}
-					}
-				}
+                int nextid = -1;
+                int parentid = -1;
+                if (pd.ParentActivityId >= 0)
+                {
+                    for (int i = 0; i < progressDataList.Count; i++)
+                    {
+                        if (progressDataList[i].ActivityId == pd.ParentActivityId)
+                        { parentid = i;
+                            break;
+                        }
+                    }
+                }
 
-				if (parentid >= 0)
-				{
-					pd.Depth = progressDataList[parentid].Depth + 1;
+                if (parentid >= 0)
+                {
+                    pd.Depth = progressDataList[parentid].Depth + 1;
 
-					for (int i = parentid + 1; i < progressDataList.Count; i++)
-					{
-						if ((progressDataList[i].Depth < pd.Depth) || ((progressDataList[i].Depth == pd.Depth) && (progressDataList[i].ParentActivityId != pd.ParentActivityId)))
-						{ nextid = i;
-							break;
-						}
-					}
-				}
+                    for (int i = parentid + 1; i < progressDataList.Count; i++)
+                    {
+                        if ((progressDataList[i].Depth < pd.Depth) || ((progressDataList[i].Depth == pd.Depth) && (progressDataList[i].ParentActivityId != pd.ParentActivityId)))
+                        { nextid = i;
+                            break;
+                        }
+                    }
+                }
 
-				if (nextid == -1)
-				{
-					AddBar(ref pd, progressDataList.Count);
-					currentProgress = progressDataList.Count;
-					progressDataList.Add(pd);
-				}
-				else
-				{
-					AddBar(ref pd, nextid);
-					currentProgress = nextid;
-					progressDataList.Insert(nextid, pd);
+                if (nextid == -1)
+                {
+                    AddBar(ref pd, progressDataList.Count);
+                    currentProgress = progressDataList.Count;
+                    progressDataList.Add(pd);
+                }
+                else
+                {
+                    AddBar(ref pd, nextid);
+                    currentProgress = nextid;
+                    progressDataList.Insert(nextid, pd);
 
-					for (int i = currentProgress+1; i < progressDataList.Count; i++)
-					{
-						progressDataList[i].lbActivity.Top = 104*i + 10;
-						progressDataList[i].lbStatus.Top = 104*i + 26;
-						progressDataList[i].objProgressBar.Top = 104*i + 47;
-						progressDataList[i].lbRemainingTime.Top = 104*i + 72;
-						progressDataList[i].lbOperation.Top = 104*i + 88;
-					}
-				}
-				if (104*progressDataList.Count + 43 <= System.Windows.Forms.Screen.FromControl(this).Bounds.Height)
-				{
-					this.Height = 104*progressDataList.Count + 43;
-					this.Location = new Point((System.Windows.Forms.Screen.FromControl(this).Bounds.Width - this.Width)/2, (System.Windows.Forms.Screen.FromControl(this).Bounds.Height - this.Height)/2);
-				}
-				else
-				{
-					this.Height = System.Windows.Forms.Screen.FromControl(this).Bounds.Height;
-					this.Location = new Point((System.Windows.Forms.Screen.FromControl(this).Bounds.Width - this.Width)/2, 0);
-				}
-			}
+                    for (int i = currentProgress+1; i < progressDataList.Count; i++)
+                    {
+                        progressDataList[i].lbActivity.Top = 104*i + 10;
+                        progressDataList[i].lbStatus.Top = 104*i + 26;
+                        progressDataList[i].objProgressBar.Top = 104*i + 47;
+                        progressDataList[i].lbRemainingTime.Top = 104*i + 72;
+                        progressDataList[i].lbOperation.Top = 104*i + 88;
+                    }
+                }
+                if (104*progressDataList.Count + 43 <= System.Windows.Forms.Screen.FromControl(this).Bounds.Height)
+                {
+                    this.Height = 104*progressDataList.Count + 43;
+                    this.Location = new Point((System.Windows.Forms.Screen.FromControl(this).Bounds.Width - this.Width)/2, (System.Windows.Forms.Screen.FromControl(this).Bounds.Height - this.Height)/2);
+                }
+                else
+                {
+                    this.Height = System.Windows.Forms.Screen.FromControl(this).Bounds.Height;
+                    this.Location = new Point((System.Windows.Forms.Screen.FromControl(this).Bounds.Width - this.Width)/2, 0);
+                }
+            }
 
-			if (!string.IsNullOrEmpty(objRecord.Activity))
-				progressDataList[currentProgress].lbActivity.Text = objRecord.Activity;
-			else
-				progressDataList[currentProgress].lbActivity.Text = "";
+            if (!string.IsNullOrEmpty(objRecord.Activity))
+                progressDataList[currentProgress].lbActivity.Text = objRecord.Activity;
+            else
+                progressDataList[currentProgress].lbActivity.Text = "";
 
-			if (!string.IsNullOrEmpty(objRecord.StatusDescription))
-				progressDataList[currentProgress].lbStatus.Text = objRecord.StatusDescription;
-			else
-				progressDataList[currentProgress].lbStatus.Text = "";
+            if (!string.IsNullOrEmpty(objRecord.StatusDescription))
+                progressDataList[currentProgress].lbStatus.Text = objRecord.StatusDescription;
+            else
+                progressDataList[currentProgress].lbStatus.Text = "";
 
-			if ((objRecord.PercentComplete >= 0) && (objRecord.PercentComplete <= 100))
-			{
-$(if (!$noVisualStyles) {@"
-				if (objRecord.PercentComplete < 100)
-					progressDataList[currentProgress].objProgressBar.Value = objRecord.PercentComplete + 1;
-				else
-					progressDataList[currentProgress].objProgressBar.Value = 99;
-				progressDataList[currentProgress].objProgressBar.Visible = true;
-				barNumber = currentProgress;
-				barValue = objRecord.PercentComplete;
+            if ((objRecord.PercentComplete >= 0) && (objRecord.PercentComplete <= 100))
+            {
+ $(if (!$noVisualStyles) {@"
+                if (objRecord.PercentComplete < 100)
+                    progressDataList[currentProgress].objProgressBar.Value = objRecord.PercentComplete + 1;
+                else
+                    progressDataList[currentProgress].objProgressBar.Value = 99;
+                progressDataList[currentProgress].objProgressBar.Visible = true;
+                barNumber = currentProgress;
+                barValue = objRecord.PercentComplete;
 "@ } else {@"
-				progressDataList[currentProgress].objProgressBar.Value = objRecord.PercentComplete;
-				progressDataList[currentProgress].objProgressBar.Visible = true;
+                progressDataList[currentProgress].objProgressBar.Value = objRecord.PercentComplete;
+                progressDataList[currentProgress].objProgressBar.Visible = true;
 "@ })
-			}
-			else
-			{ if (objRecord.PercentComplete > 100)
-				{
-					progressDataList[currentProgress].objProgressBar.Value = 0;
-					progressDataList[currentProgress].objProgressBar.Visible = true;
-$(if (!$noVisualStyles) {@"
-					barNumber = currentProgress;
-					barValue = 0;
+            }
+            else
+            { if (objRecord.PercentComplete > 100)
+                {
+                    progressDataList[currentProgress].objProgressBar.Value = 0;
+                    progressDataList[currentProgress].objProgressBar.Visible = true;
+ $(if (!$noVisualStyles) {@"
+                    barNumber = currentProgress;
+                    barValue = 0;
 "@ })
-				}
-				else
-				{
-					progressDataList[currentProgress].objProgressBar.Visible = false;
-$(if (!$noVisualStyles) {@"
-					if (barNumber == currentProgress) barNumber = -1;
+                }
+                else
+                {
+                    progressDataList[currentProgress].objProgressBar.Visible = false;
+ $(if (!$noVisualStyles) {@"
+                    if (barNumber == currentProgress) barNumber = -1;
 "@ })
-				}
-			}
+                }
+            }
 
-			if (objRecord.SecondsRemaining >= 0)
-			{
-				System.TimeSpan objTimeSpan = new System.TimeSpan(0, 0, objRecord.SecondsRemaining);
-				progressDataList[currentProgress].lbRemainingTime.Text = "Remaining time: " + string.Format("{0:00}:{1:00}:{2:00}", (int)objTimeSpan.TotalHours, objTimeSpan.Minutes, objTimeSpan.Seconds);
-			}
-			else
-				progressDataList[currentProgress].lbRemainingTime.Text = "";
+            if (objRecord.SecondsRemaining >= 0)
+            {
+                System.TimeSpan objTimeSpan = new System.TimeSpan(0, 0, objRecord.SecondsRemaining);
+                progressDataList[currentProgress].lbRemainingTime.Text = "Remaining time: " + string.Format("{0:00}:{1:00}:{2:00}", (int)objTimeSpan.TotalHours, objTimeSpan.Minutes, objTimeSpan.Seconds);
+            }
+            else
+                progressDataList[currentProgress].lbRemainingTime.Text = "";
 
-			if (!string.IsNullOrEmpty(objRecord.CurrentOperation))
-				progressDataList[currentProgress].lbOperation.Text = objRecord.CurrentOperation;
-			else
-				progressDataList[currentProgress].lbOperation.Text = "";
+            if (!string.IsNullOrEmpty(objRecord.CurrentOperation))
+                progressDataList[currentProgress].lbOperation.Text = objRecord.CurrentOperation;
+            else
+                progressDataList[currentProgress].lbOperation.Text = "";
 
-			Application.DoEvents();
-		}
-	}
+            Application.DoEvents();
+        }
+    }
 "@})
 
-	internal class MainModuleUI : PSHostUserInterface
-	{
-		private MainModuleRawUI rawUI = null;
+    internal class MainModuleUI : PSHostUserInterface
+    {
+        private MainModuleRawUI rawUI = null;
 
-		public ConsoleColor ErrorForegroundColor = ConsoleColor.Red;
-		public ConsoleColor ErrorBackgroundColor = ConsoleColor.Black;
+        public ConsoleColor ErrorForegroundColor = ConsoleColor.Red;
+        public ConsoleColor ErrorBackgroundColor = ConsoleColor.Black;
 
-		public ConsoleColor WarningForegroundColor = ConsoleColor.Yellow;
-		public ConsoleColor WarningBackgroundColor = ConsoleColor.Black;
+        public ConsoleColor WarningForegroundColor = ConsoleColor.Yellow;
+        public ConsoleColor WarningBackgroundColor = ConsoleColor.Black;
 
-		public ConsoleColor DebugForegroundColor = ConsoleColor.Yellow;
-		public ConsoleColor DebugBackgroundColor = ConsoleColor.Black;
+        public ConsoleColor DebugForegroundColor = ConsoleColor.Yellow;
+        public ConsoleColor DebugBackgroundColor = ConsoleColor.Black;
 
-		public ConsoleColor VerboseForegroundColor = ConsoleColor.Yellow;
-		public ConsoleColor VerboseBackgroundColor = ConsoleColor.Black;
+        public ConsoleColor VerboseForegroundColor = ConsoleColor.Yellow;
+        public ConsoleColor VerboseBackgroundColor = ConsoleColor.Black;
 
-$(if (!$noConsole) {@"
-		public ConsoleColor ProgressForegroundColor = ConsoleColor.Yellow;
+ $(if (!$noConsole) {@"
+        public ConsoleColor ProgressForegroundColor = ConsoleColor.Yellow;
 "@ } else {@"
-		public ConsoleColor ProgressForegroundColor = ConsoleColor.DarkCyan;
+        public ConsoleColor ProgressForegroundColor = ConsoleColor.DarkCyan;
 "@ })
-		public ConsoleColor ProgressBackgroundColor = ConsoleColor.DarkCyan;
+        public ConsoleColor ProgressBackgroundColor = ConsoleColor.DarkCyan;
 
-		public MainModuleUI() : base()
-		{
-			rawUI = new MainModuleRawUI();
-$(if (!$noConsole) {@"
-			rawUI.ForegroundColor = Console.ForegroundColor;
-			rawUI.BackgroundColor = Console.BackgroundColor;
+        public MainModuleUI() : base()
+        {
+            rawUI = new MainModuleRawUI();
+ $(if (!$noConsole) {@"
+            rawUI.ForegroundColor = Console.ForegroundColor;
+            rawUI.BackgroundColor = Console.BackgroundColor;
 "@ })
-		}
+        }
 
-		public override Dictionary<string, PSObject> Prompt(string caption, string message, System.Collections.ObjectModel.Collection<FieldDescription> descriptions)
-		{
-$(if (!$noConsole) {@"
-			if (!string.IsNullOrEmpty(caption)) WriteLine(caption);
-			if (!string.IsNullOrEmpty(message)) WriteLine(message);
+        public override Dictionary<string, PSObject> Prompt(string caption, string message, System.Collections.ObjectModel.Collection<FieldDescription> descriptions)
+        {
+ $(if (!$noConsole) {@"
+            if (!string.IsNullOrEmpty(caption)) WriteLine(caption);
+            if (!string.IsNullOrEmpty(message)) WriteLine(message);
 "@ } else {@"
-			if ((!string.IsNullOrEmpty(caption)) || (!string.IsNullOrEmpty(message)))
-			{ string sTitel = System.AppDomain.CurrentDomain.FriendlyName, sMeldung = "";
+            if ((!string.IsNullOrEmpty(caption)) || (!string.IsNullOrEmpty(message)))
+            { string sTitel = System.AppDomain.CurrentDomain.FriendlyName, sMeldung = "";
 
-				if (!string.IsNullOrEmpty(caption)) sTitel = caption;
-				if (!string.IsNullOrEmpty(message)) sMeldung = message;
-				MessageBox.Show(sMeldung, sTitel);
-			}
+                if (!string.IsNullOrEmpty(caption)) sTitel = caption;
+                if (!string.IsNullOrEmpty(message)) sMeldung = message;
+                MessageBox.Show(sMeldung, sTitel);
+            }
 
-			// Labeltext für Input_Box zurücksetzen
-			ib_message = "";
+            ib_message = "";
 "@ })
-			Dictionary<string, PSObject> ret = new Dictionary<string, PSObject>();
-			foreach (FieldDescription cd in descriptions)
-			{
-				Type t = null;
-				if (string.IsNullOrEmpty(cd.ParameterAssemblyFullName))
-					t = typeof(string);
-				else
-					t = Type.GetType(cd.ParameterAssemblyFullName);
+            Dictionary<string, PSObject> ret = new Dictionary<string, PSObject>();
+            foreach (FieldDescription cd in descriptions)
+            {
+                Type t = null;
+                if (string.IsNullOrEmpty(cd.ParameterAssemblyFullName))
+                    t = typeof(string);
+                else
+                    t = Type.GetType(cd.ParameterAssemblyFullName);
 
-				if (t.IsArray)
-				{
-					Type elementType = t.GetElementType();
-					Type genericListType = Type.GetType("System.Collections.Generic.List"+((char)0x60).ToString()+"1");
-					genericListType = genericListType.MakeGenericType(new Type[] { elementType });
-					ConstructorInfo constructor = genericListType.GetConstructor(BindingFlags.CreateInstance | BindingFlags.Instance | BindingFlags.Public, null, Type.EmptyTypes, null);
-					object resultList = constructor.Invoke(null);
+                if (t.IsArray)
+                {
+                    Type elementType = t.GetElementType();
+                    Type genericListType = Type.GetType("System.Collections.Generic.List"+((char)0x60).ToString()+"1");
+                    genericListType = genericListType.MakeGenericType(new Type[] { elementType });
+                    ConstructorInfo constructor = genericListType.GetConstructor(BindingFlags.CreateInstance | BindingFlags.Instance | BindingFlags.Public, null, Type.EmptyTypes, null);
+                    object resultList = constructor.Invoke(null);
 
-					int index = 0;
-					string data = "";
-					do
-					{
-						try
-						{
-$(if (!$noConsole) {@"
-							if (!string.IsNullOrEmpty(cd.Name)) Write(string.Format("{0}[{1}]: ", cd.Name, index));
+                    int index = 0;
+                    string data = "";
+                    do
+                    {
+                        try
+                        {
+ $(if (!$noConsole) {@"
+                            if (!string.IsNullOrEmpty(cd.Name)) Write(string.Format("{0}[{1}]: ", cd.Name, index));
 "@ } else {@"
-							if (!string.IsNullOrEmpty(cd.Name)) ib_message = string.Format("{0}[{1}]: ", cd.Name, index);
+                            if (!string.IsNullOrEmpty(cd.Name)) ib_message = string.Format("{0}[{1}]: ", cd.Name, index);
 "@ })
-							data = ReadLine();
-							if (string.IsNullOrEmpty(data))
-								break;
+                            data = ReadLine();
+                            if (string.IsNullOrEmpty(data))
+                                break;
 
-							object o = System.Convert.ChangeType(data, elementType);
-							genericListType.InvokeMember("Add", BindingFlags.InvokeMethod | BindingFlags.Public | BindingFlags.Instance, null, resultList, new object[] { o });
-						}
-						catch (Exception e)
-						{
-							throw e;
-						}
-						index++;
-					} while (true);
+                            object o = System.Convert.ChangeType(data, elementType);
+                            genericListType.InvokeMember("Add", BindingFlags.InvokeMethod | BindingFlags.Public | BindingFlags.Instance, null, resultList, new object[] { o });
+                        }
+                        catch (Exception e)
+                        {
+                            throw e;
+                        }
+                        index++;
+                    } while (true);
 
-					System.Array retArray = (System.Array )genericListType.InvokeMember("ToArray", BindingFlags.InvokeMethod | BindingFlags.Public | BindingFlags.Instance, null, resultList, null);
-					ret.Add(cd.Name, new PSObject(retArray));
-				}
-				else
-				{
-					object o = null;
-					string l = null;
-					try
-					{
-						if (t != typeof(System.Security.SecureString))
-						{
-							if (t != typeof(System.Management.Automation.PSCredential))
-							{
-$(if (!$noConsole) {@"
-								if (!string.IsNullOrEmpty(cd.Name)) Write(cd.Name);
-								if (!string.IsNullOrEmpty(cd.HelpMessage)) Write(" (Type !? for help.)");
-								if ((!string.IsNullOrEmpty(cd.Name)) || (!string.IsNullOrEmpty(cd.HelpMessage))) Write(": ");
+                    System.Array retArray = (System.Array )genericListType.InvokeMember("ToArray", BindingFlags.InvokeMethod | BindingFlags.Public | BindingFlags.Instance, null, resultList, null);
+                    ret.Add(cd.Name, new PSObject(retArray));
+                }
+                else
+                {
+                    object o = null;
+                    string l = null;
+                    try
+                    {
+                        if (t != typeof(System.Security.SecureString))
+                        {
+                            if (t != typeof(System.Management.Automation.PSCredential))
+                            {
+ $(if (!$noConsole) {@"
+                                if (!string.IsNullOrEmpty(cd.Name)) Write(cd.Name);
+                                if (!string.IsNullOrEmpty(cd.HelpMessage)) Write(" (Type !? for help.)");
+                                if ((!string.IsNullOrEmpty(cd.Name)) || (!string.IsNullOrEmpty(cd.HelpMessage))) Write(": ");
 "@ } else {@"
-								if (!string.IsNullOrEmpty(cd.Name)) ib_message = string.Format("{0}: ", cd.Name);
-								if (!string.IsNullOrEmpty(cd.HelpMessage)) ib_message += "\n(Type !? for help.)";
+                                if (!string.IsNullOrEmpty(cd.Name)) ib_message = string.Format("{0}: ", cd.Name);
+                                if (!string.IsNullOrEmpty(cd.HelpMessage)) ib_message += "\n(Type !? for help.)";
 "@ })
-								do {
-									l = ReadLine();
-									if (l == "!?")
-										WriteLine(cd.HelpMessage);
-									else
-									{
-										if (string.IsNullOrEmpty(l)) o = cd.DefaultValue;
-										if (o == null)
-										{
-											try {
-												o = System.Convert.ChangeType(l, t);
-											}
-											catch {
-												Write("Wrong format, please repeat input: ");
-												l = "!?";
-											}
-										}
-									}
-								} while (l == "!?");
-							}
-							else
-							{
-								PSCredential pscred = PromptForCredential("", "", "", "");
-								o = pscred;
-							}
-						}
-						else
-						{
-$(if (!$noConsole) {@"
-								if (!string.IsNullOrEmpty(cd.Name)) Write(string.Format("{0}: ", cd.Name));
+                                do {
+                                    l = ReadLine();
+                                    if (l == "!?")
+                                        WriteLine(cd.HelpMessage);
+                                    else
+                                    {
+                                        if (string.IsNullOrEmpty(l)) o = cd.DefaultValue;
+                                        if (o == null)
+                                        {
+                                            try {
+                                                o = System.Convert.ChangeType(l, t);
+                                            }
+                                            catch {
+                                                Write("Wrong format, please repeat input: ");
+                                                l = "!?";
+                                            }
+                                        }
+                                    }
+                                } while (l == "!?");
+                            }
+                            else
+                            {
+                                PSCredential pscred = PromptForCredential("", "", "", "");
+                                o = pscred;
+                            }
+                        }
+                        else
+                        {
+ $(if (!$noConsole) {@"
+                                if (!string.IsNullOrEmpty(cd.Name)) Write(string.Format("{0}: ", cd.Name));
 "@ } else {@"
-								if (!string.IsNullOrEmpty(cd.Name)) ib_message = string.Format("{0}: ", cd.Name);
+                                if (!string.IsNullOrEmpty(cd.Name)) ib_message = string.Format("{0}: ", cd.Name);
 "@ })
 
-							SecureString pwd = null;
-							pwd = ReadLineAsSecureString();
-							o = pwd;
-						}
+                            SecureString pwd = null;
+                            pwd = ReadLineAsSecureString();
+                            o = pwd;
+                        }
 
-						ret.Add(cd.Name, new PSObject(o));
-					}
-					catch (Exception e)
-					{
-						throw e;
-					}
-				}
-			}
-$(if ($noConsole) {@"
-			// Labeltext für Input_Box zurücksetzen
-			ib_message = "";
+                        ret.Add(cd.Name, new PSObject(o));
+                    }
+                    catch (Exception e)
+                    {
+                        throw e;
+                    }
+                }
+            }
+ $(if ($noConsole) {@"
+            ib_message = "";
 "@ })
-			return ret;
-		}
+            return ret;
+        }
 
-		public override int PromptForChoice(string caption, string message, System.Collections.ObjectModel.Collection<ChoiceDescription> choices, int defaultChoice)
-		{
-$(if ($noConsole) {@"
-			int iReturn = Choice_Box.Show(choices, defaultChoice, caption, message);
-			if (iReturn == -1) { iReturn = defaultChoice; }
-			return iReturn;
+        public override int PromptForChoice(string caption, string message, System.Collections.ObjectModel.Collection<ChoiceDescription> choices, int defaultChoice)
+        {
+ $(if ($noConsole) {@"
+            int iReturn = Choice_Box.Show(choices, defaultChoice, caption, message);
+            if (iReturn == -1) { iReturn = defaultChoice; }
+            return iReturn;
 "@ } else {@"
-			if (!string.IsNullOrEmpty(caption)) WriteLine(caption);
-			WriteLine(message);
-			do {
-				int idx = 0;
-				SortedList<string, int> res = new SortedList<string, int>();
-				string defkey = "";
-				foreach (ChoiceDescription cd in choices)
-				{
-					string lkey = cd.Label.Substring(0, 1), ltext = cd.Label;
-					int pos = cd.Label.IndexOf('&');
-					if (pos > -1)
-					{
-						lkey = cd.Label.Substring(pos + 1, 1).ToUpper();
-						if (pos > 0)
-							ltext = cd.Label.Substring(0, pos) + cd.Label.Substring(pos + 1);
-						else
-							ltext = cd.Label.Substring(1);
-					}
-					res.Add(lkey.ToLower(), idx);
+            if (!string.IsNullOrEmpty(caption)) WriteLine(caption);
+            WriteLine(message);
+            do {
+                int idx = 0;
+                SortedList<string, int> res = new SortedList<string, int>();
+                string defkey = "";
+                foreach (ChoiceDescription cd in choices)
+                {
+                    string lkey = cd.Label.Substring(0, 1), ltext = cd.Label;
+                    int pos = cd.Label.IndexOf('&');
+                    if (pos > -1)
+                    {
+                        lkey = cd.Label.Substring(pos + 1, 1).ToUpper();
+                        if (pos > 0)
+                            ltext = cd.Label.Substring(0, pos) + cd.Label.Substring(pos + 1);
+                        else
+                            ltext = cd.Label.Substring(1);
+                    }
+                    res.Add(lkey.ToLower(), idx);
 
-					if (idx > 0) Write("  ");
-					if (idx == defaultChoice)
-					{
-						Write(VerboseForegroundColor, rawUI.BackgroundColor, string.Format("[{0}] {1}", lkey, ltext));
-						defkey = lkey;
-					}
-					else
-						Write(rawUI.ForegroundColor, rawUI.BackgroundColor, string.Format("[{0}] {1}", lkey, ltext));
-					idx++;
-				}
-				Write(rawUI.ForegroundColor, rawUI.BackgroundColor, string.Format("  [?] Help (default is \"{0}\"): ", defkey));
+                    if (idx > 0) Write("  ");
+                    if (idx == defaultChoice)
+                    {
+                        Write(VerboseForegroundColor, rawUI.BackgroundColor, string.Format("[{0}] {1}", lkey, ltext));
+                        defkey = lkey;
+                    }
+                    else
+                        Write(rawUI.ForegroundColor, rawUI.BackgroundColor, string.Format("[{0}] {1}", lkey, ltext));
+                    idx++;
+                }
+                Write(rawUI.ForegroundColor, rawUI.BackgroundColor, string.Format("  [?] Help (default is \"{0}\"): ", defkey));
 
-				string inpkey = "";
-				try
-				{
-					inpkey = Console.ReadLine().ToLower();
-					if (res.ContainsKey(inpkey)) return res[inpkey];
-					if (string.IsNullOrEmpty(inpkey)) return defaultChoice;
-				}
-				catch { }
-				if (inpkey == "?")
-				{
-					foreach (ChoiceDescription cd in choices)
-					{
-						string lkey = cd.Label.Substring(0, 1);
-						int pos = cd.Label.IndexOf('&');
-						if (pos > -1) lkey = cd.Label.Substring(pos + 1, 1).ToUpper();
-						if (!string.IsNullOrEmpty(cd.HelpMessage))
-							WriteLine(rawUI.ForegroundColor, rawUI.BackgroundColor, string.Format("{0} - {1}", lkey, cd.HelpMessage));
-						else
-							WriteLine(rawUI.ForegroundColor, rawUI.BackgroundColor, string.Format("{0} -", lkey));
-					}
-				}
-			} while (true);
+                string inpkey = "";
+                try
+                {
+                    inpkey = Console.ReadLine().ToLower();
+                    if (res.ContainsKey(inpkey)) return res[inpkey];
+                    if (string.IsNullOrEmpty(inpkey)) return defaultChoice;
+                }
+                catch { }
+                if (inpkey == "?")
+                {
+                    foreach (ChoiceDescription cd in choices)
+                    {
+                        string lkey = cd.Label.Substring(0, 1);
+                        int pos = cd.Label.IndexOf('&');
+                        if (pos > -1) lkey = cd.Label.Substring(pos + 1, 1).ToUpper();
+                        if (!string.IsNullOrEmpty(cd.HelpMessage))
+                            WriteLine(rawUI.ForegroundColor, rawUI.BackgroundColor, string.Format("{0} - {1}", lkey, cd.HelpMessage));
+                        else
+                            WriteLine(rawUI.ForegroundColor, rawUI.BackgroundColor, string.Format("{0} -", lkey));
+                    }
+                }
+            } while (true);
 "@ })
-		}
+        }
 
-		public override PSCredential PromptForCredential(string caption, string message, string userName, string targetName, PSCredentialTypes allowedCredentialTypes, PSCredentialUIOptions options)
-		{
-$(if (!$noConsole -and !$credentialGUI) {@"
-			if (!string.IsNullOrEmpty(caption)) WriteLine(caption);
-			WriteLine(message);
+        public override PSCredential PromptForCredential(string caption, string message, string userName, string targetName, PSCredentialTypes allowedCredentialTypes, PSCredentialUIOptions options)
+        {
+ $(if (!$noConsole -and !$credentialGUI) {@"
+            if (!string.IsNullOrEmpty(caption)) WriteLine(caption);
+            WriteLine(message);
 
-			string un;
-			if ((string.IsNullOrEmpty(userName)) || ((options & PSCredentialUIOptions.ReadOnlyUserName) == 0))
-			{
-				Write("User name: ");
-				un = ReadLine();
-			}
-			else
-			{
-				Write("User name: ");
-				if (!string.IsNullOrEmpty(targetName)) Write(targetName + "\\");
-				WriteLine(userName);
-				un = userName;
-			}
-			SecureString pwd = null;
-			Write("Password: ");
-			pwd = ReadLineAsSecureString();
+            string un;
+            if ((string.IsNullOrEmpty(userName)) || ((options & PSCredentialUIOptions.ReadOnlyUserName) == 0))
+            {
+                Write("User name: ");
+                un = ReadLine();
+            }
+            else
+            {
+                Write("User name: ");
+                if (!string.IsNullOrEmpty(targetName)) Write(targetName + "\\");
+                WriteLine(userName);
+                un = userName;
+            }
+            SecureString pwd = null;
+            Write("Password: ");
+            pwd = ReadLineAsSecureString();
 
-			if (string.IsNullOrEmpty(un)) un = "<NOUSER>";
-			if (!string.IsNullOrEmpty(targetName))
-			{
-				if (un.IndexOf('\\') < 0)
-					un = targetName + "\\" + un;
-			}
+            if (string.IsNullOrEmpty(un)) un = "<NOUSER>";
+            if (!string.IsNullOrEmpty(targetName))
+            {
+                if (un.IndexOf('\\') < 0)
+                    un = targetName + "\\" + un;
+            }
 
-			PSCredential c2 = new PSCredential(un, pwd);
-			return c2;
+            PSCredential c2 = new PSCredential(un, pwd);
+            return c2;
 "@ } else {@"
-			Credential_Form.User_Pwd cred = Credential_Form.PromptForPassword(caption, message, targetName, userName, allowedCredentialTypes, options);
-			if (cred != null)
-			{
-				System.Security.SecureString x = new System.Security.SecureString();
-				foreach (char c in cred.Password.ToCharArray())
-					x.AppendChar(c);
+            Credential_Form.User_Pwd cred = Credential_Form.PromptForPassword(caption, message, targetName, userName, allowedCredentialTypes, options);
+            if (cred != null)
+            {
+                System.Security.SecureString x = new System.Security.SecureString();
+                foreach (char c in cred.Password.ToCharArray())
+                    x.AppendChar(c);
 
-				return new PSCredential(cred.User, x);
-			}
-			return null;
+                return new PSCredential(cred.User, x);
+            }
+            return null;
 "@ })
-		}
+        }
 
-		public override PSCredential PromptForCredential(string caption, string message, string userName, string targetName)
-		{
-$(if (!$noConsole -and !$credentialGUI) {@"
-			if (!string.IsNullOrEmpty(caption)) WriteLine(caption);
-			WriteLine(message);
+        public override PSCredential PromptForCredential(string caption, string message, string userName, string targetName)
+        {
+ $(if (!$noConsole -and !$credentialGUI) {@"
+            if (!string.IsNullOrEmpty(caption)) WriteLine(caption);
+            WriteLine(message);
 
-			string un;
-			if (string.IsNullOrEmpty(userName))
-			{
-				Write("User name: ");
-				un = ReadLine();
-			}
-			else
-			{
-				Write("User name: ");
-				if (!string.IsNullOrEmpty(targetName)) Write(targetName + "\\");
-				WriteLine(userName);
-				un = userName;
-			}
-			SecureString pwd = null;
-			Write("Password: ");
-			pwd = ReadLineAsSecureString();
+            string un;
+            if (string.IsNullOrEmpty(userName))
+            {
+                Write("User name: ");
+                un = ReadLine();
+            }
+            else
+            {
+                Write("User name: ");
+                if (!string.IsNullOrEmpty(targetName)) Write(targetName + "\\");
+                WriteLine(userName);
+                un = userName;
+            }
+            SecureString pwd = null;
+            Write("Password: ");
+            pwd = ReadLineAsSecureString();
 
-			if (string.IsNullOrEmpty(un)) un = "<NOUSER>";
-			if (!string.IsNullOrEmpty(targetName))
-			{
-				if (un.IndexOf('\\') < 0)
-					un = targetName + "\\" + un;
-			}
+            if (string.IsNullOrEmpty(un)) un = "<NOUSER>";
+            if (!string.IsNullOrEmpty(targetName))
+            {
+                if (un.IndexOf('\\') < 0)
+                    un = targetName + "\\" + un;
+            }
 
-			PSCredential c2 = new PSCredential(un, pwd);
-			return c2;
+            PSCredential c2 = new PSCredential(un, pwd);
+            return c2;
 "@ } else {@"
-			Credential_Form.User_Pwd cred = Credential_Form.PromptForPassword(caption, message, targetName, userName, PSCredentialTypes.Default, PSCredentialUIOptions.Default);
-			if (cred != null)
-			{
-				System.Security.SecureString x = new System.Security.SecureString();
-				foreach (char c in cred.Password.ToCharArray())
-					x.AppendChar(c);
+            Credential_Form.User_Pwd cred = Credential_Form.PromptForPassword(caption, message, targetName, userName, PSCredentialTypes.Default, PSCredentialUIOptions.Default);
+            if (cred != null)
+            {
+                System.Security.SecureString x = new System.Security.SecureString();
+                foreach (char c in cred.Password.ToCharArray())
+                    x.AppendChar(c);
 
-				return new PSCredential(cred.User, x);
-			}
-			return null;
+                return new PSCredential(cred.User, x);
+            }
+            return null;
 "@ })
-		}
+        }
 
-		public override PSHostRawUserInterface RawUI
-		{
-			get
-			{
-				return rawUI;
-			}
-		}
+        public override PSHostRawUserInterface RawUI
+        {
+            get
+            {
+                return rawUI;
+            }
+        }
 
-$(if ($noConsole) {@"
-		private string ib_message;
+ $(if ($noConsole) {@"
+        private string ib_message;
 "@ })
 
-		public override string ReadLine()
-		{
-$(if (!$noConsole) {@"
-			return Console.ReadLine();
+        public override string ReadLine()
+        {
+ $(if (!$noConsole) {@"
+            return Console.ReadLine();
 "@ } else {@"
-			string sWert = "";
-			if (Input_Box.Show(rawUI.WindowTitle, ib_message, ref sWert) == DialogResult.OK)
-				return sWert;
-			else
+            string sWert = "";
+            if (Input_Box.Show(rawUI.WindowTitle, ib_message, ref sWert) == DialogResult.OK)
+                return sWert;
+            else
 "@ })
-$(if ($noConsole) { if ($exitOnCancel) {@"
-				Environment.Exit(1);
-			return "";
+ $(if ($noConsole) { if ($exitOnCancel) {@"
+                Environment.Exit(1);
+            return "";
 "@ } else {@"
-				return "";
+                return "";
 "@ } })
-		}
+        }
 
-		private System.Security.SecureString getPassword()
-		{
-			System.Security.SecureString pwd = new System.Security.SecureString();
-			while (true)
-			{
-				ConsoleKeyInfo i = Console.ReadKey(true);
-				if (i.Key == ConsoleKey.Enter)
-				{
-					Console.WriteLine();
-					break;
-				}
-				else if (i.Key == ConsoleKey.Backspace)
-				{
-					if (pwd.Length > 0)
-					{
-						pwd.RemoveAt(pwd.Length - 1);
-						Console.Write("\b \b");
-					}
-				}
-				else if (i.KeyChar != '\u0000')
-				{
-					pwd.AppendChar(i.KeyChar);
-					Console.Write("*");
-				}
-			}
-			return pwd;
-		}
+        private System.Security.SecureString getPassword()
+        {
+            System.Security.SecureString pwd = new System.Security.SecureString();
+            while (true)
+            {
+                ConsoleKeyInfo i = Console.ReadKey(true);
+                if (i.Key == ConsoleKey.Enter)
+                {
+                    Console.WriteLine();
+                    break;
+                }
+                else if (i.Key == ConsoleKey.Backspace)
+                {
+                    if (pwd.Length > 0)
+                    {
+                        pwd.RemoveAt(pwd.Length - 1);
+                        Console.Write("\b \b");
+                    }
+                }
+                else if (i.KeyChar != '\u0000')
+                {
+                    pwd.AppendChar(i.KeyChar);
+                    Console.Write("*");
+                }
+            }
+            return pwd;
+        }
 
-		public override System.Security.SecureString ReadLineAsSecureString()
-		{
-			System.Security.SecureString secstr = new System.Security.SecureString();
-$(if (!$noConsole) {@"
-			secstr = getPassword();
+        public override System.Security.SecureString ReadLineAsSecureString()
+        {
+            System.Security.SecureString secstr = new System.Security.SecureString();
+ $(if (!$noConsole) {@"
+            secstr = getPassword();
 "@ } else {@"
-			string sWert = "";
-			if (Input_Box.Show(rawUI.WindowTitle, ib_message, ref sWert, true) == DialogResult.OK)
-			{
-				foreach (char ch in sWert)
-					secstr.AppendChar(ch);
-			}
+            string sWert = "";
+            if (Input_Box.Show(rawUI.WindowTitle, ib_message, ref sWert, true) == DialogResult.OK)
+            {
+                foreach (char ch in sWert)
+                    secstr.AppendChar(ch);
+            }
 "@ })
-$(if ($noConsole) { if ($exitOnCancel) {@"
-			else
-				Environment.Exit(1);
+ $(if ($noConsole) { if ($exitOnCancel) {@"
+            else
+                Environment.Exit(1);
 "@ } })
-			return secstr;
-		}
+            return secstr;
+        }
 
-		// called by Write-Host
-		public override void Write(ConsoleColor foregroundColor, ConsoleColor backgroundColor, string value)
-		{
-$(if (!$noOutput) { if (!$noConsole) {@"
-			ConsoleColor fgc = Console.ForegroundColor, bgc = Console.BackgroundColor;
-			Console.ForegroundColor = foregroundColor;
-			Console.BackgroundColor = backgroundColor;
-			Console.Write(value);
-			Console.ForegroundColor = fgc;
-			Console.BackgroundColor = bgc;
+        public override void Write(ConsoleColor foregroundColor, ConsoleColor backgroundColor, string value)
+        {
+ $(if (!$noOutput) { if (!$noConsole) {@"
+            ConsoleColor fgc = Console.ForegroundColor, bgc = Console.BackgroundColor;
+            Console.ForegroundColor = foregroundColor;
+            Console.BackgroundColor = backgroundColor;
+            Console.Write(value);
+            Console.ForegroundColor = fgc;
+            Console.BackgroundColor = bgc;
 "@ } else {@"
-			if ((!string.IsNullOrEmpty(value)) && (value != "\n"))
-				MessageBox.Show(value, rawUI.WindowTitle);
+            if ((!string.IsNullOrEmpty(value)) && (value != "\n"))
+                MessageBox.Show(value, rawUI.WindowTitle);
 "@ } })
-		}
+        }
 
-		public override void Write(string value)
-		{
-$(if (!$noOutput) { if (!$noConsole) {@"
-			Console.Write(value);
+        public override void Write(string value)
+        {
+ $(if (!$noOutput) { if (!$noConsole) {@"
+            Console.Write(value);
 "@ } else {@"
-			if ((!string.IsNullOrEmpty(value)) && (value != "\n"))
-				MessageBox.Show(value, rawUI.WindowTitle);
+            if ((!string.IsNullOrEmpty(value)) && (value != "\n"))
+                MessageBox.Show(value, rawUI.WindowTitle);
 "@ } })
-		}
+        }
 
-		// called by Write-Debug
-		public override void WriteDebugLine(string message)
-		{
-$(if (!$noError) { if (!$noConsole) {@"
-			WriteLineInternal(DebugForegroundColor, DebugBackgroundColor, string.Format("DEBUG: {0}", message));
+        public override void WriteDebugLine(string message)
+        {
+ $(if (!$noError) { if (!$noConsole) {@"
+            WriteLineInternal(DebugForegroundColor, DebugBackgroundColor, string.Format("DEBUG: {0}", message));
 "@ } else {@"
-			MessageBox.Show(message, rawUI.WindowTitle, MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(message, rawUI.WindowTitle, MessageBoxButtons.OK, MessageBoxIcon.Information);
 "@ } })
-		}
+        }
 
-		// called by Write-Error
-		public override void WriteErrorLine(string value)
-		{
-$(if (!$noError) { if (!$noConsole) {@"
-			if (Console.IsErrorRedirected)
-				Console.Error.WriteLine(string.Format("ERROR: {0}", value));
-			else
-				WriteLineInternal(ErrorForegroundColor, ErrorBackgroundColor, string.Format("ERROR: {0}", value));
+        public override void WriteErrorLine(string value)
+        {
+ $(if (!$noError) { if (!$noConsole) {@"
+            if (Console.IsErrorRedirected)
+                Console.Error.WriteLine(string.Format("ERROR: {0}", value));
+            else
+                WriteLineInternal(ErrorForegroundColor, ErrorBackgroundColor, string.Format("ERROR: {0}", value));
 "@ } else {@"
-			MessageBox.Show(value, rawUI.WindowTitle, MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show(value, rawUI.WindowTitle, MessageBoxButtons.OK, MessageBoxIcon.Error);
 "@ } })
-		}
+        }
 
-		public override void WriteLine()
-		{
-$(if (!$noOutput) { if (!$noConsole) {@"
-			Console.WriteLine();
+        public override void WriteLine()
+        {
+ $(if (!$noOutput) { if (!$noConsole) {@"
+            Console.WriteLine();
 "@ } else {@"
-			MessageBox.Show("", rawUI.WindowTitle);
+            MessageBox.Show("", rawUI.WindowTitle);
 "@ } })
-		}
+        }
 
-		public override void WriteLine(ConsoleColor foregroundColor, ConsoleColor backgroundColor, string value)
-		{
-$(if (!$noOutput) { if (!$noConsole) {@"
-			ConsoleColor fgc = Console.ForegroundColor, bgc = Console.BackgroundColor;
-			Console.ForegroundColor = foregroundColor;
-			Console.BackgroundColor = backgroundColor;
-			Console.WriteLine(value);
-			Console.ForegroundColor = fgc;
-			Console.BackgroundColor = bgc;
+        public override void WriteLine(ConsoleColor foregroundColor, ConsoleColor backgroundColor, string value)
+        {
+ $(if (!$noOutput) { if (!$noConsole) {@"
+            ConsoleColor fgc = Console.ForegroundColor, bgc = Console.BackgroundColor;
+            Console.ForegroundColor = foregroundColor;
+            Console.BackgroundColor = backgroundColor;
+            Console.WriteLine(value);
+            Console.ForegroundColor = fgc;
+            Console.BackgroundColor = bgc;
 "@ } else {@"
-			if ((!string.IsNullOrEmpty(value)) && (value != "\n"))
-				MessageBox.Show(value, rawUI.WindowTitle);
+            if ((!string.IsNullOrEmpty(value)) && (value != "\n"))
+                MessageBox.Show(value, rawUI.WindowTitle);
 "@ } })
-		}
+        }
 
-$(if (!$noError -And !$noConsole) {@"
-		private void WriteLineInternal(ConsoleColor foregroundColor, ConsoleColor backgroundColor, string value)
-		{
-			ConsoleColor fgc = Console.ForegroundColor, bgc = Console.BackgroundColor;
-			Console.ForegroundColor = foregroundColor;
-			Console.BackgroundColor = backgroundColor;
-			Console.WriteLine(value);
-			Console.ForegroundColor = fgc;
-			Console.BackgroundColor = bgc;
-		}
+ $(if (!$noError -And !$noConsole) {@"
+        private void WriteLineInternal(ConsoleColor foregroundColor, ConsoleColor backgroundColor, string value)
+        {
+            ConsoleColor fgc = Console.ForegroundColor, bgc = Console.BackgroundColor;
+            Console.ForegroundColor = foregroundColor;
+            Console.BackgroundColor = backgroundColor;
+            Console.WriteLine(value);
+            Console.ForegroundColor = fgc;
+            Console.BackgroundColor = bgc;
+        }
 "@ })
 
-		// called by Write-Output
-		public override void WriteLine(string value)
-		{
-$(if (!$noOutput) { if (!$noConsole) {@"
-			Console.WriteLine(value);
+        public override void WriteLine(string value)
+        {
+ $(if (!$noOutput) { if (!$noConsole) {@"
+            Console.WriteLine(value);
 "@ } else {@"
-			if ((!string.IsNullOrEmpty(value)) && (value != "\n"))
-				MessageBox.Show(value, rawUI.WindowTitle);
+            if ((!string.IsNullOrEmpty(value)) && (value != "\n"))
+                MessageBox.Show(value, rawUI.WindowTitle);
 "@ } })
-		}
+        }
 
-$(if ($noConsole) {@"
-		public Progress_Form pf = null;
+ $(if ($noConsole) {@"
+        public Progress_Form pf = null;
 "@ })
-		public override void WriteProgress(long sourceId, ProgressRecord record)
-		{
-$(if ($noConsole) {@"
-			if (pf == null)
-			{
-				if (record.RecordType == ProgressRecordType.Completed) return;
-				pf = new Progress_Form(rawUI.WindowTitle, ProgressForegroundColor);
-				pf.Show();
-			}
-			pf.Update(record);
-			if (record.RecordType == ProgressRecordType.Completed)
-			{
-				if (pf.GetCount() == 0) pf = null;
-			}
+        public override void WriteProgress(long sourceId, ProgressRecord record)
+        {
+ $(if ($noConsole) {@"
+            if (pf == null)
+            {
+                if (record.RecordType == ProgressRecordType.Completed) return;
+                pf = new Progress_Form(rawUI.WindowTitle, ProgressForegroundColor);
+                pf.Show();
+            }
+            pf.Update(record);
+            if (record.RecordType == ProgressRecordType.Completed)
+            {
+                if (pf.GetCount() == 0) pf = null;
+            }
 "@ })
-		}
+        }
 
-		// called by Write-Verbose
-		public override void WriteVerboseLine(string message)
-		{
-$(if (!$noOutput) { if (!$noConsole) {@"
-			WriteLine(VerboseForegroundColor, VerboseBackgroundColor, string.Format("VERBOSE: {0}", message));
+        public override void WriteVerboseLine(string message)
+        {
+ $(if (!$noOutput) { if (!$noConsole) {@"
+            WriteLine(VerboseForegroundColor, VerboseBackgroundColor, string.Format("VERBOSE: {0}", message));
 "@ } else {@"
-			MessageBox.Show(message, rawUI.WindowTitle, MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(message, rawUI.WindowTitle, MessageBoxButtons.OK, MessageBoxIcon.Information);
 "@ } })
-		}
+        }
 
-		// called by Write-Warning
-		public override void WriteWarningLine(string message)
-		{
-$(if (!$noError) { if (!$noConsole) {@"
-			WriteLineInternal(WarningForegroundColor, WarningBackgroundColor, string.Format("WARNING: {0}", message));
+        public override void WriteWarningLine(string message)
+        {
+ $(if (!$noError) { if (!$noConsole) {@"
+            WriteLineInternal(WarningForegroundColor, WarningBackgroundColor, string.Format("WARNING: {0}", message));
 "@ } else {@"
-			MessageBox.Show(message, rawUI.WindowTitle, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            MessageBox.Show(message, rawUI.WindowTitle, MessageBoxButtons.OK, MessageBoxIcon.Warning);
 "@ } })
-		}
-	}
+        }
+    }
 
-	internal class MainModule : PSHost
-	{
-		private MainAppInterface parent;
-		private MainModuleUI ui = null;
+    internal class MainModule : PSHost
+    {
+        private MainAppInterface parent;
+        private MainModuleUI ui = null;
 
-		private CultureInfo originalCultureInfo = System.Threading.Thread.CurrentThread.CurrentCulture;
+        private CultureInfo originalCultureInfo = System.Threading.Thread.CurrentThread.CurrentCulture;
 
-		private CultureInfo originalUICultureInfo = System.Threading.Thread.CurrentThread.CurrentUICulture;
+        private CultureInfo originalUICultureInfo = System.Threading.Thread.CurrentThread.CurrentUICulture;
 
-		private Guid myId = Guid.NewGuid();
+        private Guid myId = Guid.NewGuid();
 
-		public MainModule(MainAppInterface app, MainModuleUI ui)
-		{
-			this.parent = app;
-			this.ui = ui;
-		}
+        public MainModule(MainAppInterface app, MainModuleUI ui)
+        {
+            this.parent = app;
+            this.ui = ui;
+        }
 
-		public class ConsoleColorProxy
-		{
-			private MainModuleUI _ui;
+        public class ConsoleColorProxy
+        {
+            private MainModuleUI _ui;
 
-			public ConsoleColorProxy(MainModuleUI ui)
-			{
-				if (ui == null) throw new ArgumentNullException("ui");
-				_ui = ui;
-			}
+            public ConsoleColorProxy(MainModuleUI ui)
+            {
+                if (ui == null) throw new ArgumentNullException("ui");
+                _ui = ui;
+            }
 
-			public ConsoleColor ErrorForegroundColor
-			{
-				get
-				{ return _ui.ErrorForegroundColor; }
-				set
-				{ _ui.ErrorForegroundColor = value; }
-			}
+            public ConsoleColor ErrorForegroundColor
+            {
+                get
+                { return _ui.ErrorForegroundColor; }
+                set
+                { _ui.ErrorForegroundColor = value; }
+            }
 
-			public ConsoleColor ErrorBackgroundColor
-			{
-				get
-				{ return _ui.ErrorBackgroundColor; }
-				set
-				{ _ui.ErrorBackgroundColor = value; }
-			}
+            public ConsoleColor ErrorBackgroundColor
+            {
+                get
+                { return _ui.ErrorBackgroundColor; }
+                set
+                { _ui.ErrorBackgroundColor = value; }
+            }
 
-			public ConsoleColor WarningForegroundColor
-			{
-				get
-				{ return _ui.WarningForegroundColor; }
-				set
-				{ _ui.WarningForegroundColor = value; }
-			}
+            public ConsoleColor WarningForegroundColor
+            {
+                get
+                { return _ui.WarningForegroundColor; }
+                set
+                { _ui.WarningForegroundColor = value; }
+            }
 
-			public ConsoleColor WarningBackgroundColor
-			{
-				get
-				{ return _ui.WarningBackgroundColor; }
-				set
-				{ _ui.WarningBackgroundColor = value; }
-			}
+            public ConsoleColor WarningBackgroundColor
+            {
+                get
+                { return _ui.WarningBackgroundColor; }
+                set
+                { _ui.WarningBackgroundColor = value; }
+            }
 
-			public ConsoleColor DebugForegroundColor
-			{
-				get
-				{ return _ui.DebugForegroundColor; }
-				set
-				{ _ui.DebugForegroundColor = value; }
-			}
+            public ConsoleColor DebugForegroundColor
+            {
+                get
+                { return _ui.DebugForegroundColor; }
+                set
+                { _ui.DebugForegroundColor = value; }
+            }
 
-			public ConsoleColor DebugBackgroundColor
-			{
-				get
-				{ return _ui.DebugBackgroundColor; }
-				set
-				{ _ui.DebugBackgroundColor = value; }
-			}
+            public ConsoleColor DebugBackgroundColor
+            {
+                get
+                { return _ui.DebugBackgroundColor; }
+                set
+                { _ui.DebugBackgroundColor = value; }
+            }
 
-			public ConsoleColor VerboseForegroundColor
-			{
-				get
-				{ return _ui.VerboseForegroundColor; }
-				set
-				{ _ui.VerboseForegroundColor = value; }
-			}
+            public ConsoleColor VerboseForegroundColor
+            {
+                get
+                { return _ui.VerboseForegroundColor; }
+                set
+                { _ui.VerboseForegroundColor = value; }
+            }
 
-			public ConsoleColor VerboseBackgroundColor
-			{
-				get
-				{ return _ui.VerboseBackgroundColor; }
-				set
-				{ _ui.VerboseBackgroundColor = value; }
-			}
+            public ConsoleColor VerboseBackgroundColor
+            {
+                get
+                { return _ui.VerboseBackgroundColor; }
+                set
+                { _ui.VerboseBackgroundColor = value; }
+            }
 
-			public ConsoleColor ProgressForegroundColor
-			{
-				get
-				{ return _ui.ProgressForegroundColor; }
-				set
-				{ _ui.ProgressForegroundColor = value; }
-			}
+            public ConsoleColor ProgressForegroundColor
+            {
+                get
+                { return _ui.ProgressForegroundColor; }
+                set
+                { _ui.ProgressForegroundColor = value; }
+            }
 
-			public ConsoleColor ProgressBackgroundColor
-			{
-				get
-				{ return _ui.ProgressBackgroundColor; }
-				set
-				{ _ui.ProgressBackgroundColor = value; }
-			}
-		}
+            public ConsoleColor ProgressBackgroundColor
+            {
+                get
+                { return _ui.ProgressBackgroundColor; }
+                set
+                { _ui.ProgressBackgroundColor = value; }
+            }
+        }
 
-		public override PSObject PrivateData
-		{
-			get
-			{
-				if (ui == null) return null;
-				return _consoleColorProxy ?? (_consoleColorProxy = PSObject.AsPSObject(new ConsoleColorProxy(ui)));
-			}
-		}
+        public override PSObject PrivateData
+        {
+            get
+            {
+                if (ui == null) return null;
+                return _consoleColorProxy ?? (_consoleColorProxy = PSObject.AsPSObject(new ConsoleColorProxy(ui)));
+            }
+        }
 
-		private PSObject _consoleColorProxy;
+        private PSObject _consoleColorProxy;
 
-		public override System.Globalization.CultureInfo CurrentCulture
-		{
-			get
-			{
-				return this.originalCultureInfo;
-			}
-		}
+        public override System.Globalization.CultureInfo CurrentCulture
+        {
+            get
+            {
+                return this.originalCultureInfo;
+            }
+        }
 
-		public override System.Globalization.CultureInfo CurrentUICulture
-		{
-			get
-			{
-				return this.originalUICultureInfo;
-			}
-		}
+        public override System.Globalization.CultureInfo CurrentUICulture
+        {
+            get
+            {
+                return this.originalUICultureInfo;
+            }
+        }
 
-		public override Guid InstanceId
-		{
-			get
-			{
-				return this.myId;
-			}
-		}
+        public override Guid InstanceId
+        {
+            get
+            {
+                return this.myId;
+            }
+        }
 
-		public override string Name
-		{
-			get
-			{
-				return "PSRunspace-Host";
-			}
-		}
+        public override string Name
+        {
+            get
+            {
+                return "PSRunspace-Host";
+            }
+        }
 
-		public override PSHostUserInterface UI
-		{
-			get
-			{
-				return ui;
-			}
-		}
+        public override PSHostUserInterface UI
+        {
+            get
+            {
+                return ui;
+            }
+        }
 
-		public override Version Version
-		{
-			get
-			{
-				return new Version(0, 5, 0, 34);
-			}
-		}
+        public override Version Version
+        {
+            get
+            {
+                return new Version(0, 5, 0, 35);
+            }
+        }
 
-		public override void EnterNestedPrompt()
-		{
-		}
+        public override void EnterNestedPrompt()
+        {
+        }
 
-		public override void ExitNestedPrompt()
-		{
-		}
+        public override void ExitNestedPrompt()
+        {
+        }
 
-		public override void NotifyBeginApplication()
-		{
-			return;
-		}
+        public override void NotifyBeginApplication()
+        {
+            return;
+        }
 
-		public override void NotifyEndApplication()
-		{
-			return;
-		}
+        public override void NotifyEndApplication()
+        {
+            return;
+        }
 
-		public override void SetShouldExit(int exitCode)
-		{
-			this.parent.ShouldExit = true;
-			this.parent.ExitCode = exitCode;
-		}
-	}
+        public override void SetShouldExit(int exitCode)
+        {
+            this.parent.ShouldExit = true;
+            this.parent.ExitCode = exitCode;
+        }
+    }
 
-	internal interface MainAppInterface
-	{
-		bool ShouldExit { get; set; }
-		int ExitCode { get; set; }
-	}
+    internal interface MainAppInterface
+    {
+        bool ShouldExit { get; set; }
+        int ExitCode { get; set; }
+    }
 
-	internal class MainApp : MainAppInterface
-	{
-		private bool shouldExit;
+    internal class MainApp : MainAppInterface
+    {
+        private bool shouldExit;
 
-		private int exitCode;
+        private int exitCode;
 
-		public bool ShouldExit
-		{
-			get { return this.shouldExit; }
-			set { this.shouldExit = value; }
-		}
+        public bool ShouldExit
+        {
+            get { return this.shouldExit; }
+            set { this.shouldExit = value; }
+        }
 
-		public int ExitCode
-		{
-			get { return this.exitCode; }
-			set { this.exitCode = value; }
-		}
+        public int ExitCode
+        {
+            get { return this.exitCode; }
+            set { this.exitCode = value; }
+        }
 
-$(if ($conHost) {@"
-		[DllImport("kernel32.dll", SetLastError = true)][return: MarshalAs(UnmanagedType.Bool)]
-		private static extern bool AllocConsole();
+ $(if ($conHost) {@"
+        [DllImport("kernel32.dll", SetLastError = true)][return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool AllocConsole();
 "@ })
 
-		$(if ($STA){"[STAThread]"})$(if ($MTA){"[MTAThread]"})
-		private static int Main(string[] args)
-		{
-$(if ($conHost) {@"
-			// before this command no console should be attached or allocation fails
-			if (!AllocConsole()) { Console.Error.WriteLine("Creation of console failed!"); }
+        $(if ($STA){"[STAThread]"})$(if ($MTA){"[MTAThread]"})
+        private static int Main(string[] args)
+        {
+ $(if ($conHost) {@"
+            // before this command no console should be attached or allocation fails
+            if (!AllocConsole()) { Console.Error.WriteLine("Creation of console failed!"); }
 
-			// connect STDIN
-			Console.SetIn(new System.IO.StreamReader(Console.OpenStandardInput()));
+            Console.SetIn(new System.IO.StreamReader(Console.OpenStandardInput()));
 
-			// connect STDOUT
-			System.IO.StreamWriter streamWriter = new System.IO.StreamWriter(Console.OpenStandardOutput());
-			streamWriter.AutoFlush = true;
-			Console.SetOut(streamWriter);
+            System.IO.StreamWriter streamWriter = new System.IO.StreamWriter(Console.OpenStandardOutput());
+            streamWriter.AutoFlush = true;
+            Console.SetOut(streamWriter);
 
-			// connect STDERR
-			System.IO.StreamWriter errorWriter = new System.IO.StreamWriter(Console.OpenStandardOutput());
-			errorWriter.AutoFlush = true;
-			Console.SetError(errorWriter);
+            System.IO.StreamWriter errorWriter = new System.IO.StreamWriter(Console.OpenStandardOutput());
+            errorWriter.AutoFlush = true;
+            Console.SetError(errorWriter);
 "@ })
-$(if (!$noConsole -and $UNICODEEncoding) {@"
-			Console.OutputEncoding = new System.Text.UnicodeEncoding();
+ $(if (!$noConsole -and $UNICODEEncoding) {@"
+            Console.OutputEncoding = new System.Text.UnicodeEncoding();
 "@ })
-			$culture
+            $culture
 
-			$(if (!$noVisualStyles -and $noConsole) { "Application.EnableVisualStyles();" })
-			MainApp me = new MainApp();
+            $(if (!$noVisualStyles -and $noConsole) { "Application.EnableVisualStyles();" })
+            MainApp me = new MainApp();
 
-			bool paramWait = false;
-			string extractFN = string.Empty;
+            bool paramWait = false;
+            string extractFN = string.Empty;
 
-			MainModuleUI ui = new MainModuleUI();
-			MainModule host = new MainModule(me, ui);
-			System.Threading.ManualResetEvent mre = new System.Threading.ManualResetEvent(false);
+            MainModuleUI ui = new MainModuleUI();
+            MainModule host = new MainModule(me, ui);
+            System.Threading.ManualResetEvent mre = new System.Threading.ManualResetEvent(false);
 
-			AppDomain.CurrentDomain.UnhandledException += new UnhandledExceptionEventHandler(CurrentDomain_UnhandledException);
+            AppDomain.CurrentDomain.UnhandledException += new UnhandledExceptionEventHandler(CurrentDomain_UnhandledException);
 
-			try
-			{
-				using (Runspace myRunSpace = RunspaceFactory.CreateRunspace(host))
-				{
-					$(if ($STA -or $MTA) {"myRunSpace.ApartmentState = System.Threading.ApartmentState."})$(if ($STA){"STA"})$(if ($MTA){"MTA"});
-					myRunSpace.Open();
+            try
+            {
+                using (Runspace myRunSpace = RunspaceFactory.CreateRunspace(host))
+                {
+                    $(if ($STA -or $MTA) {"myRunSpace.ApartmentState = System.Threading.ApartmentState."})$(if ($STA){"STA"})$(if ($MTA){"MTA"});
+                    myRunSpace.Open();
 
-					// add variable $ScriptRoot with absolute directory path of binary
-					myRunSpace.SessionStateProxy.SetVariable("ScriptRoot", System.AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\'));
+                    // Add $ScriptRoot pointing to the EXE directory (SessionStateProxy
+                    // cannot override the automatic $PSScriptRoot / $PSCommandPath,
+                    // those are prepended to the script below).
+                    myRunSpace.SessionStateProxy.SetVariable("ScriptRoot", System.AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\'));
 
-					using (PowerShell posh = PowerShell.Create())
-					{
-$(if (!$noConsole) {@"
-						Console.CancelKeyPress += new ConsoleCancelEventHandler(delegate(object sender, ConsoleCancelEventArgs e)
-						{
-							try
-							{
-								posh.BeginStop(new AsyncCallback(delegate(IAsyncResult r)
-								{
-									mre.Set();
-									e.Cancel = true;
-								}), null);
-							}
-							catch
-							{
-							};
-						});
+                    using (PowerShell posh = PowerShell.Create())
+                    {
+ $(if (!$noConsole) {@"
+                        Console.CancelKeyPress += new ConsoleCancelEventHandler(delegate(object sender, ConsoleCancelEventArgs e)
+                        {
+                            try
+                            {
+                                posh.BeginStop(new AsyncCallback(delegate(IAsyncResult r)
+                                {
+                                    mre.Set();
+                                    e.Cancel = true;
+                                }), null);
+                            }
+                            catch
+                            {
+                            };
+                        });
 "@ })
 
-						posh.Runspace = myRunSpace;
-						posh.Streams.Error.DataAdded += new EventHandler<DataAddedEventArgs>(delegate(object sender, DataAddedEventArgs e)
-						{
-							ui.WriteErrorLine(((PSDataCollection<ErrorRecord>)sender)[e.Index].Exception.Message);
-						});
+                        posh.Runspace = myRunSpace;
+                        posh.Streams.Error.DataAdded += new EventHandler<DataAddedEventArgs>(delegate(object sender, DataAddedEventArgs e)
+                        {
+                            ui.WriteErrorLine(((PSDataCollection<ErrorRecord>)sender)[e.Index].Exception.Message);
+                        });
 
-						PSDataCollection<string> colInput = new PSDataCollection<string>();
-						if (Console.IsInputRedirected)
-						{ // read standard input
-							string sItem = "";
-							while ((sItem = Console.ReadLine()) != null)
-							{ // add to powershell pipeline
-								colInput.Add(sItem);
-							}
-						}
-						colInput.Complete();
+                        PSDataCollection<string> colInput = new PSDataCollection<string>();
+                        if (Console.IsInputRedirected)
+                        {
+                            string sItem = "";
+                            while ((sItem = Console.ReadLine()) != null)
+                            {
+                                colInput.Add(sItem);
+                            }
+                        }
+                        colInput.Complete();
 
-						PSDataCollection<PSObject> colOutput = new PSDataCollection<PSObject>();
-						colOutput.DataAdded += new EventHandler<DataAddedEventArgs>(delegate(object sender, DataAddedEventArgs e)
-						{
-							ui.WriteLine(((PSDataCollection<PSObject>)sender)[e.Index].ToString());
-						});
+                        PSDataCollection<PSObject> colOutput = new PSDataCollection<PSObject>();
+                        colOutput.DataAdded += new EventHandler<DataAddedEventArgs>(delegate(object sender, DataAddedEventArgs e)
+                        {
+                            ui.WriteLine(((PSDataCollection<PSObject>)sender)[e.Index].ToString());
+                        });
 
-						int separator = 0;
-						int idx = 0;
-						bool bHelp = false;
-						string sHelp = "";
-						foreach (string s in args)
-						{
-							if (string.Compare(s, "-wait", true) == 0)
-								paramWait = true;
-							else if (s.StartsWith("-extract", StringComparison.InvariantCultureIgnoreCase))
-							{
-								string[] s1 = s.Split(new string[] { ":" }, 2, StringSplitOptions.RemoveEmptyEntries);
-								if (s1.Length != 2)
-								{
-$(if (!$noConsole) {@"
-									Console.WriteLine("If you specify the -extract option you need to add a file for extraction in this way\r\n   -extract:\"<filename>\"");
+                        int separator = 0;
+                        int idx = 0;
+                        bool bHelp = false;
+                        string sHelp = "";
+                        foreach (string s in args)
+                        {
+                            if (string.Compare(s, "-wait", true) == 0)
+                                paramWait = true;
+                            else if (s.StartsWith("-extract", StringComparison.InvariantCultureIgnoreCase))
+                            {
+                                string[] s1 = s.Split(new string[] { ":" }, 2, StringSplitOptions.RemoveEmptyEntries);
+                                if (s1.Length != 2)
+                                {
+ $(if (!$noConsole) {@"
+                                    Console.WriteLine("If you specify the -extract option you need to add a file for extraction in this way\r\n   -extract:\"<filename>\"");
 "@ } else {@"
-									MessageBox.Show("If you specify the -extract option you need to add a file for extraction in this way\r\n   -extract:\"<filename>\"", System.AppDomain.CurrentDomain.FriendlyName, MessageBoxButtons.OK, MessageBoxIcon.Error);
+                                    MessageBox.Show("If you specify the -extract option you need to add a file for extraction in this way\r\n   -extract:\"<filename>\"", System.AppDomain.CurrentDomain.FriendlyName, MessageBoxButtons.OK, MessageBoxIcon.Error);
 "@ })
-									return 1;
-								}
-								extractFN = s1[1].Trim(new char[] { '\"' });
-							}
-							else if (string.Compare(s, "-end", true) == 0)
-							{
-								separator = idx + 1;
-								break;
-							}
-							else if (string.Compare(s, "-?", true) == 0)
-							{
-								bHelp = true;
-							}
-							else if (bHelp)
-							{
-								if ((string.Compare(s, "-detailed", true) == 0) || (string.Compare(s, "-examples", true) == 0) || (string.Compare(s, "-full", true) == 0))
-								{
-									sHelp = s;
-								}
-							}
-							else if (string.Compare(s, "-debug", true) == 0)
-							{
-								System.Diagnostics.Debugger.Launch();
-								break;
-							}
-							idx++;
-						}
+                                    return 1;
+                                }
+                                extractFN = s1[1].Trim(new char[] { '\"' });
+                            }
+                            else if (string.Compare(s, "-end", true) == 0)
+                            {
+                                separator = idx + 1;
+                                break;
+                            }
+                            else if (string.Compare(s, "-?", true) == 0)
+                            {
+                                bHelp = true;
+                            }
+                            else if (bHelp)
+                            {
+                                if ((string.Compare(s, "-detailed", true) == 0) || (string.Compare(s, "-examples", true) == 0) || (string.Compare(s, "-full", true) == 0))
+                                {
+                                    sHelp = s;
+                                }
+                            }
+                            else if (string.Compare(s, "-debug", true) == 0)
+                            {
+                                System.Diagnostics.Debugger.Launch();
+                                break;
+                            }
+                            idx++;
+                        }
 
-						Assembly executingAssembly = Assembly.GetExecutingAssembly();
+                        Assembly executingAssembly = Assembly.GetExecutingAssembly();
 
-$EMBEDSECTION
+ $EMBEDSECTION
 
-						using (System.IO.Stream scriptstream = executingAssembly.GetManifestResourceStream("$([System.IO.Path]::GetFileName($inputFile))"))
-						{
-							using (System.IO.StreamReader scriptreader = new System.IO.StreamReader(scriptstream, System.Text.Encoding.UTF8))
-							{
-								string script = scriptreader.ReadToEnd();
+                        using (System.IO.Stream scriptstream = executingAssembly.GetManifestResourceStream("$([System.IO.Path]::GetFileName($inputFile))"))
+                        {
+                            using (System.IO.StreamReader scriptreader = new System.IO.StreamReader(scriptstream, System.Text.Encoding.UTF8))
+                            {
+                                string script = scriptreader.ReadToEnd();
 
-								if (!string.IsNullOrEmpty(extractFN))
-								{
-									System.IO.File.WriteAllText(extractFN, script);
-									return 0;
-								}
+                                if (!string.IsNullOrEmpty(extractFN))
+                                {
+                                    System.IO.File.WriteAllText(extractFN, script);
+                                    return 0;
+                                }
 
-								if (bHelp)
-								{ // help selected
-									posh.AddScript("function " + System.AppDomain.CurrentDomain.FriendlyName + "{" + script + "}; Get-Help " + System.AppDomain.CurrentDomain.FriendlyName + " " + sHelp + " | Out-String");
-								} else { // execution selected
-									posh.AddScript(script);
-								}
-							}
-						}
+                                if (bHelp)
+                                { // help selected
+                                    posh.AddScript("`$PSScriptRoot = '" + System.AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\') + "'\r\n`$PSCommandPath = '" + executingAssembly.Location + "'\r\nfunction " + System.AppDomain.CurrentDomain.FriendlyName + "{" + script + "}; Get-Help " + System.AppDomain.CurrentDomain.FriendlyName + " " + sHelp + " | Out-String");
+                                } else { // execution selected
+                                    posh.AddScript("`$PSScriptRoot = '" + System.AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\') + "'\r\n`$PSCommandPath = '" + executingAssembly.Location + "'\r\n" + script);
+                                }                            }
+                        }
 
-						if (!bHelp)
-						{ // only if no help selected
-							// parse parameters
-							string argbuffer = null;
-							// regex for named parameters
-							System.Text.RegularExpressions.Regex regex = new System.Text.RegularExpressions.Regex(@"^-([^: ]+)[ :]?([^:]*)$");
+                        if (!bHelp)
+                        {
+                            string argbuffer = null;
+                            System.Text.RegularExpressions.Regex regex = new System.Text.RegularExpressions.Regex(@"^-([^: ]+)[ :]?([^:]*)$");
 
-							for (int i = separator; i < args.Length; i++)
-							{
-								System.Text.RegularExpressions.Match match = regex.Match(args[i]);
-								double dummy;
+                            for (int i = separator; i < args.Length; i++)
+                            {
+                                System.Text.RegularExpressions.Match match = regex.Match(args[i]);
+                                double dummy;
 
-								if ((match.Success && match.Groups.Count == 3) && (!Double.TryParse(args[i], out dummy)))
-								{ // parameter in powershell style, means named parameter found
-									if (argbuffer != null) // already a named parameter in buffer, then flush it
-										posh.AddParameter(argbuffer);
+                                if ((match.Success && match.Groups.Count == 3) && (!Double.TryParse(args[i], out dummy)))
+                                {
+                                    if (argbuffer != null)
+                                        posh.AddParameter(argbuffer);
 
-									if (match.Groups[2].Value.Trim() == "")
-									{ // store named parameter in buffer
-										argbuffer = match.Groups[1].Value;
-									}
-									else
-										// caution: when called in powershell $TRUE gets converted, when called in cmd.exe not
-										if ((match.Groups[2].Value == "$TRUE") || (match.Groups[2].Value.ToUpper() == "\x24TRUE"))
-										{ // switch found
-											posh.AddParameter(match.Groups[1].Value, true);
-											argbuffer = null;
-										}
-										else
-											// caution: when called in powershell $FALSE gets converted, when called in cmd.exe not
-											if ((match.Groups[2].Value == "$FALSE") || (match.Groups[2].Value.ToUpper() == "\x24"+"FALSE"))
-											{ // switch found
-												posh.AddParameter(match.Groups[1].Value, false);
-												argbuffer = null;
-											}
-											else
-											{ // named parameter with value found
-												posh.AddParameter(match.Groups[1].Value, match.Groups[2].Value);
-												argbuffer = null;
-											}
-								}
-								else
-								{ // unnamed parameter found
-									if (argbuffer != null)
-									{ // already a named parameter in buffer, so this is the value
-										posh.AddParameter(argbuffer, args[i]);
-										argbuffer = null;
-									}
-									else
-									{ // position parameter found
-										posh.AddArgument(args[i]);
-									}
-								}
-							}
+                                    if (match.Groups[2].Value.Trim() == "")
+                                    {
+                                        argbuffer = match.Groups[1].Value;
+                                    }
+                                    else
+                                        if ((match.Groups[2].Value == "$TRUE") || (match.Groups[2].Value.ToUpper() == "\x24TRUE"))
+                                        {
+                                            posh.AddParameter(match.Groups[1].Value, true);
+                                            argbuffer = null;
+                                        }
+                                        else
+                                            if ((match.Groups[2].Value == "$FALSE") || (match.Groups[2].Value.ToUpper() == "\x24"+"FALSE"))
+                                        {
+                                            posh.AddParameter(match.Groups[1].Value, false);
+                                            argbuffer = null;
+                                        }
+                                            else
+                                            {
+                                                posh.AddParameter(match.Groups[1].Value, match.Groups[2].Value);
+                                                argbuffer = null;
+                                            }
+                                }
+                                else
+                                {
+                                    if (argbuffer != null)
+                                    {
+                                        posh.AddParameter(argbuffer, args[i]);
+                                        argbuffer = null;
+                                    }
+                                    else
+                                    {
+                                        posh.AddArgument(args[i]);
+                                    }
+                                }
+                            }
 
-							if (argbuffer != null) posh.AddParameter(argbuffer); // flush parameter buffer...
+                            if (argbuffer != null) posh.AddParameter(argbuffer);
 
-							// convert output to strings
-							posh.AddCommand("Out-String");
-							// with a single string per line
-							posh.AddParameter("Stream");
-						}
+                            posh.AddCommand("Out-String");
+                            posh.AddParameter("Stream");
+                        }
 
-						posh.BeginInvoke<string, PSObject>(colInput, colOutput, null, new AsyncCallback(delegate(IAsyncResult ar)
-						{
-							if (ar.IsCompleted)
-								mre.Set();
-						}), null);
+                        posh.BeginInvoke<string, PSObject>(colInput, colOutput, null, new AsyncCallback(delegate(IAsyncResult ar)
+                        {
+                            if (ar.IsCompleted)
+                                mre.Set();
+                        }), null);
 
-						while (!me.ShouldExit && !mre.WaitOne(100))
-						{ };
+                        while (!me.ShouldExit && !mre.WaitOne(100))
+                        { };
 
-						posh.Stop();
+                        posh.Stop();
 
-						if (posh.InvocationStateInfo.State == PSInvocationState.Failed)
-							ui.WriteErrorLine(posh.InvocationStateInfo.Reason.Message);
-					}
+                        if (posh.InvocationStateInfo.State == PSInvocationState.Failed)
+                            ui.WriteErrorLine(posh.InvocationStateInfo.Reason.Message);
+                    }
 
-					myRunSpace.Close();
-				}
-			}
-			catch (Exception ex)
-			{
-$(if (!$noError) { if (!$noConsole) {@"
-				Console.Write("An exception occured: ");
-				Console.WriteLine(ex.Message);
+                    myRunSpace.Close();
+                }
+            }
+            catch (Exception ex)
+            {
+ $(if (!$noError) { if (!$noConsole) {@"
+                Console.Write("An exception occured: ");
+                Console.WriteLine(ex.Message);
 "@ } else {@"
-				MessageBox.Show("An exception occured: " + ex.Message, System.AppDomain.CurrentDomain.FriendlyName, MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show("An exception occured: " + ex.Message, System.AppDomain.CurrentDomain.FriendlyName, MessageBoxButtons.OK, MessageBoxIcon.Error);
 "@ } })
-			}
+            }
 
-			if (paramWait)
-			{
-$(if (!$noConsole) {@"
-				Console.WriteLine("Hit any key to exit...");
-				Console.ReadKey();
+            if (paramWait)
+            {
+ $(if (!$noConsole) {@"
+                Console.WriteLine("Hit any key to exit...");
+                Console.ReadKey();
 "@ } else {@"
-				MessageBox.Show("Click OK to exit...", System.AppDomain.CurrentDomain.FriendlyName);
+                MessageBox.Show("Click OK to exit...", System.AppDomain.CurrentDomain.FriendlyName);
 "@ })
-			}
-			return me.ExitCode;
-		}
+            }
+            return me.ExitCode;
+        }
 
-		static void CurrentDomain_UnhandledException(object sender, UnhandledExceptionEventArgs e)
-		{
-			throw new Exception("Unhandled exception in " + System.AppDomain.CurrentDomain.FriendlyName);
-		}
-	}
+        static void CurrentDomain_UnhandledException(object sender, UnhandledExceptionEventArgs e)
+        {
+            throw new Exception("Unhandled exception in " + System.AppDomain.CurrentDomain.FriendlyName);
+        }
+    }
 }
 "@
+    }
 
-	if ($winFormsDPIAware)
-	{
-		$configFileForEXE3 = "<?xml version=""1.0"" encoding=""utf-8"" ?>`r`n<configuration><startup><supportedRuntime version=""v4.0"" sku="".NETFramework,Version=v4.7"" /></startup>"
-	}
-	else
-	{
-		$configFileForEXE3 = "<?xml version=""1.0"" encoding=""utf-8"" ?>`r`n<configuration><startup><supportedRuntime version=""v4.0"" sku="".NETFramework,Version=v4.0"" /></startup>"
-	}
-	if ($longPaths)
-	{
-		$configFileForEXE3 += "<runtime><AppContextSwitchOverrides value=""Switch.System.IO.UseLegacyPathHandling=false;Switch.System.IO.BlockLongPaths=false"" /></runtime>"
-	}
-	if ($winFormsDPIAware)
-	{
-		$configFileForEXE3 += "<System.Windows.Forms.ApplicationConfigurationSection><add key=""DpiAwareness"" value=""PerMonitorV2"" /></System.Windows.Forms.ApplicationConfigurationSection>"
-	}
-	$configFileForEXE3 += "</configuration>"
+    # ==================================================================
+    # Config file: skip for PS7 mode (no .NET Framework runtime config needed)
+    # ==================================================================
+    if (!$ps7)
+    {
+        if ($winFormsDPIAware)
+        {
+            $configFileForEXE3 = "<?xml version=""1.0"" encoding=""utf-8"" ?>`r`n<configuration><startup><supportedRuntime version=""v4.0"" sku="".NETFramework,Version=v4.7"" /></startup>"
+        }
+        else
+        {
+            $configFileForEXE3 = "<?xml version=""1.0"" encoding=""utf-8"" ?>`r`n<configuration><startup><supportedRuntime version=""v4.0"" sku="".NETFramework,Version=v4.0"" /></startup>"
+        }
+        if ($longPaths)
+        {
+            $configFileForEXE3 += "<runtime><AppContextSwitchOverrides value=""Switch.System.IO.UseLegacyPathHandling=false;Switch.System.IO.BlockLongPaths=false"" /></runtime>"
+        }
+        if ($winFormsDPIAware)
+        {
+            $configFileForEXE3 += "<System.Windows.Forms.ApplicationConfigurationSection><add key=""DpiAwareness"" value=""PerMonitorV2"" /></System.Windows.Forms.ApplicationConfigurationSection>"
+        }
+        $configFileForEXE3 += "</configuration>"
+    }
+    else
+    {
+        $configFileForEXE3 = ""
+    }
 
-	Write-Output "Compiling file...`n"
-	$cr = $cop.CompileAssemblyFromSource($cp, $programFrame)
-	if ($cr.Errors.Count -gt 0)
-	{
-		if (Test-Path -LiteralPath $outputFile)
-		{
-			Remove-Item -LiteralPath $outputFile -Verbose:$FALSE
-		}
-		Write-Error -ErrorAction Continue "Could not create the PowerShell .exe file because of compilation errors. Use -verbose parameter to see details."
-		$cr.Errors | ForEach-Object { Write-Verbose $_ }
-	}
-	else
-	{
-		if (Test-Path -LiteralPath $outputFile)
-		{
-			Write-Output "Output file $outputFile written"
+    Write-Output "Compiling file...`n"
+    $cr = $cop.CompileAssemblyFromSource($cp, $programFrame)
+    if ($cr.Errors.Count -gt 0)
+    {
+        if (Test-Path -LiteralPath $outputFile)
+        {
+            Remove-Item -LiteralPath $outputFile -Verbose:$FALSE
+        }
+        Write-Error -ErrorAction Continue "Could not create the PowerShell .exe file because of compilation errors. Use -verbose parameter to see details."
+        $cr.Errors | ForEach-Object { Write-Verbose $_ }
+    }
+    else
+    {
+        if (Test-Path -LiteralPath $outputFile)
+        {
+            Write-Output "Output file $outputFile written"
 
-			if ($prepareDebug)
-			{
-				$cr.TempFiles | Where-Object { $_ -ilike "*.cs" } | Select-Object -First 1 | ForEach-Object {
-					$dstSrc = ([System.IO.Path]::Combine([System.IO.Path]::GetDirectoryName($outputFile), [System.IO.Path]::GetFileNameWithoutExtension($outputFile)+".cs"))
-					Write-Output "Source file name for debug copied: $($dstSrc)"
-					Copy-Item -Path $_ -Destination $dstSrc -Force
-				}
-				$cr.TempFiles | Remove-Item -Verbose:$FALSE -Force -ErrorAction SilentlyContinue
-			}
-			if ($CFGFILE)
-			{
-				$configFileForEXE3 | Set-Content ($outputFile+".config") -Encoding UTF8
-				Write-Output "Config file for EXE created"
-			}
-		}
-		else
-		{
-			Write-Error -ErrorAction "Continue" "Output file $outputFile not written"
-		}
-	}
+            if ($prepareDebug)
+            {
+                $cr.TempFiles | Where-Object { $_ -ilike "*.cs" } | Select-Object -First 1 | ForEach-Object {
+                    $dstSrc = ([System.IO.Path]::Combine([System.IO.Path]::GetDirectoryName($outputFile), [System.IO.Path]::GetFileNameWithoutExtension($outputFile)+".cs"))
+                    Write-Output "Source file name for debug copied: $($dstSrc)"
+                    Copy-Item -Path $_ -Destination $dstSrc -Force
+                }
+                $cr.TempFiles | Remove-Item -Verbose:$FALSE -Force -ErrorAction SilentlyContinue
+            }
+            if ($CFGFILE -and ![STRING]::IsNullOrEmpty($configFileForEXE3))
+            {
+                $configFileForEXE3 | Set-Content ($outputFile+".config") -Encoding UTF8
+                Write-Output "Config file for EXE created"
+            }
+        }
+        else
+        {
+            Write-Error -ErrorAction "Continue" "Output file $outputFile not written"
+        }
+    }
 
-	if ($requireAdmin -or $DPIAware -or $supportOS -or $longPaths)
-	{ if (Test-Path -LiteralPath $($outputFile+".win32manifest"))
-		{
-			Remove-Item -LiteralPath $($outputFile+".win32manifest") -Verbose:$FALSE
-		}
-	}
+    if ($requireAdmin -or $DPIAware -or $supportOS -or $longPaths)
+    { if (Test-Path -LiteralPath $($outputFile+".win32manifest"))
+        {
+            Remove-Item -LiteralPath $($outputFile+".win32manifest") -Verbose:$FALSE
+        }
+    }
 }

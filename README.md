@@ -1,24 +1,19 @@
-### AI free repository - artificial intelligence is killing creativity and our nature!
-
 # PS2EXE
-Overworking of the great script of Ingo Karstein with GUI support. The GUI output and input is activated with one switch, real windows executables are generated. Compiles only Powershell 5.x compatible scripts. With optional graphical front end Win-PS2EXE.
+Rework of the great script of Ingo Karstein with GUI support. The GUI output and input is activated with the `-noConsole` switch, real Windows executables are generated. By default compiles PowerShell 5.x compatible scripts. With `-ps7` a lightweight executable is generated that runs the embedded script via `pwsh.exe` (PowerShell 7+); PowerShell 7+ must be installed on the target machine. With optional graphical front end Win-PS2EXE.
 
 Module version.
 
-You find the script based version here (https://github.com/MScholtes/TechNet-Gallery).
-
-Author: Markus Scholtes
+Original Authors: Ingo Karstein, Markus Scholtes. You find the original script based version here (https://github.com/MScholtes/TechNet-Gallery).
+Fork Author: Andrew Afanasiev
 
 Version: 1.0.18
+(PowerShell 7+ support)
 
-Date: 2026-06-06
+Date: 2026.09.16
 
 ## Installation
 
-```powershell
-PS C:\> Install-Module ps2exe
-```
-or download from here: https://www.powershellgallery.com/packages/ps2exe/.
+Download from here: https://github.com/AfanasievAA/PS2EXE
 
 ## Usage
 ```powershell
@@ -34,15 +29,34 @@ or start Win-PS2EXE for a graphical front end with
 ```powershell
   Win-PS2EXE
 ```
+### Compile a PowerShell 7+ executable (console mode)
+
+```powershell
+Invoke-ps2exe -inputFile .\MyScript.ps1 -outputFile .\MyScript7.exe -ps7
+```
+The resulting executable is a lightweight .NET Framework stub that locates `pwsh.exe` (PowerShell 7+) on the target machine, extracts the embedded script to a temporary wrapper `.ps1` and runs it via `pwsh.exe -NoProfile -NoLogo -ExecutionPolicy Bypass -File <temp_script>`.
+
+- PowerShell 7+ must be installed on the target machine.
+- In console mode `pwsh.exe` inherits the console for interactive input/output.
+- `-conHost`, `-credentialGUI` and `-UNICODEEncoding` are not applicable with `-ps7` and are ignored with a warning.
+
+### Compile a PowerShell 7+ GUI executable (no console window)
+
+```powershell
+Invoke-ps2exe -inputFile .\MyScript.ps1 -outputFile .\MyScript7.exe `
+    -ps7 -noConsole -title "MyScript" -version 1.0.0.1
+```
+The resulting executable is a graphical application: stdout and stderr of `pwsh.exe` are captured and shown in message boxes. Progress, verbose, debug and information streams are not displayed unless redirected inside the script.
 
 ## Parameter
 ```powershell
 ps2exe [-inputFile] '<file_name>' [[-outputFile] '<file_name>']
        [-prepareDebug] [-x86|-x64] [-lcid <id>] [-STA|-MTA] [-noConsole] [-conHost] [-UNICODEEncoding]
-       [-credentialGUI] [-iconFile '<filename>'] [-$embedFiles <hashtable>] [-title '<title>'] [-description '<description>']
+       [-credentialGUI] [-iconFile '<filename>'] [-embedFiles <hashtable>] [-title '<title>'] [-description '<description>']
        [-company '<company>'] [-product '<product>'] [-copyright '<copyright>'] [-trademark '<trademark>']
        [-version '<version>'] [-configFile] [-noOutput] [-noError] [-noVisualStyles] [-exitOnCancel]
-       [-DPIAware] [-requireAdmin] [-supportOS] [-virtualize] [-longPaths]
+       [-DPIAware] [-winFormsDPIAware] [-requireAdmin] [-supportOS] [-virtualize] [-longPaths]
+       [-ps7]
 ```
 
 ```
@@ -54,8 +68,11 @@ ps2exe [-inputFile] '<file_name>' [[-outputFile] '<file_name>']
      STA or MTA = 'Single Thread Apartment' or 'Multi Thread Apartment' mode
       noConsole = the resulting executable will be a Windows Forms app without a console window
         conHost = force start with conhost as console instead of Windows Terminal (disables redirections)
+                  not applicable with -ps7
 UNICODEEncoding = encode output as UNICODE in console mode
+                  not applicable with -ps7
   credentialGUI = use GUI for prompting credentials in console mode
+                  not applicable with -ps7
        iconFile = icon file name for the compiled executable
      embedFiles = files to embed given as hash, will be extracted to key of hash, source file names must be unique
                   (e.g. -embedFiles @{'Targetfilepath'='Sourcefilepath'} )
@@ -76,6 +93,12 @@ UNICODEEncoding = encode output as UNICODE in console mode
       supportOS = use functions of newest Windows versions (execute [Environment]::OSVersion to see the difference)
      virtualize = application virtualization is activated (forcing x86 runtime)
       longPaths = enable long paths ( > 260 characters) if enabled on OS (works only with Windows 10)
+           ps7 = generate an executable that runs the embedded script via pwsh.exe (PowerShell 7+)
+                 PowerShell 7+ must be installed on the target machine.
+                 In console mode pwsh.exe inherits the console for interactive input/output.
+                 In GUI mode (-noConsole) output is captured and shown in message boxes.
+                 Not applicable together with -conHost, -credentialGUI and -UNICODEEncoding
+                 (those parameters are ignored with a warning).
 ```
 
 A generated executable has the following reserved parameters:
@@ -95,9 +118,18 @@ A generated executable has the following reserved parameters:
 ## Remarks
 
 ### Use of Powershell Core:
-PS2EXE can be used with Powershell Core. To do so just install the module PS2EXE in Powershell Core as described above. But since .Net Core is not delivered with a compiler, the compiler of .Net Framework is used (.Net Framework and Powershell 5.1 are included in Windows).
+PS2EXE can be used with Powershell Core. To do so just install the module PS2EXE in Powershell Core as described above. Since .NET Core does not ship with a compiler, the .NET Framework compiler is used (both .NET Framework and PowerShell 5.1 are included in Windows).
 
-**For this reason PS2EXE can only compile Powershell 5.1 compatible scripts and generates .Net 4.x binaries, but can still be used directly on every supported Windows OS without dependencies.**
+**Without `-ps7` PS2EXE can only compile PowerShell 5.1 compatible scripts and generates .NET 4.x binaries, but can still be used directly on every supported Windows OS without dependencies.**
+
+**With `-ps7`** PS2EXE generates a lightweight .NET Framework stub executable that:
+1. Locates `pwsh.exe` (PowerShell 7+) via registry or well-known paths.
+2. Extracts the embedded script to a temporary wrapper `.ps1` file that sets `$ScriptRoot`, `$PSScriptRoot`, `$PSCommandPath` and the culture.
+3. Launches `pwsh.exe -NoProfile -NoLogo -ExecutionPolicy Bypass -File <temp_script> <args>`.
+4. In console mode inherits the console for interactive input/output; in GUI mode (`-noConsole`) captures output and shows it in message boxes.
+5. Cleans up the temporary file and returns the exit code of `pwsh.exe`.
+
+PowerShell 7+ must be installed on the target machine. `-conHost`, `-credentialGUI` and `-UNICODEEncoding` are not applicable with `-ps7` and are ignored with a warning.
 
 ### Embedding files in compiled executables:
 With the parameter *-embedFiles* followed by a hash table with paths to files those files will be embedded in the compiled executable.
@@ -128,7 +160,7 @@ will decompile the script stored in Output.exe. And notice: the script (intentio
 ### Script variables:
 Since PS2EXE converts a script to an executable, script related variables are not available anymore. The variable $MyInvocation is set to other values than in a script.
 
-Especially the variable $PSScriptRoot is empty - you can use $ScriptRoot as an replacement.
+Since v0.5.1.0 the variables $ScriptRoot, $PSScriptRoot and $PSCommandPath are set by PS2EXE in both PS 5.1 and PS7 modes and point to the location of the executable (in PS7 mode they are set in the wrapper script before user code runs).
 
 You can get $PSScriptRoot independently of compiled/not compiled with the following code line:
 
@@ -152,9 +184,11 @@ $Host.UI.RawUI.FlushInputBuffer()
 ```
 
 ## Changes:
-### 1.0.18 - 2026-06-06
+### 1.0.18 - 2026-09-16
 - predefined variable $ScriptRoot as replacement for $PSScriptRoot
-- new version of Win-PS2EXE
+- powershell 7+ compiling support. new  -ps7 parameter: generates EXE that runs embedded script
+         via pwsh.exe (PowerShell 7+). PowerShell 7+ must be installed
+         on the target machine
 
 ### 1.0.17 / 2025-08-21
 - new parameter -embedFiles to embed files in compiled executable
