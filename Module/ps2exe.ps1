@@ -122,15 +122,13 @@ Compiles C:\Data\MyScript.ps1 to C:\Data\MyScript7.exe as graphical executable t
 Win-PS2EXE
 Start graphical front end to Invoke-ps2exe
 .NOTES
-Version: 0.5.1.00
+Version: 0.5.1.1
 Date: 2026.09.16
 Author: Andrew Afanasiev
 Original Authors: Ingo Karstein, Markus Scholtes
 .LINK
 Original file at https://github.com/MScholtes/PS2EXE
-<#
-<#
-.CHANGELOG v0.5.1.0
+.CHANGELOG v0.5.1.1
 ============================================
 [NEW]    Added -ps7 parameter: generates EXE that runs embedded script
          via pwsh.exe (PowerShell 7+). PowerShell 7+ must be installed
@@ -148,13 +146,11 @@ Original file at https://github.com/MScholtes/PS2EXE
          in PS7 mode (stub EXE does not need runtimeconfig).
 
 [NEW]    $PSScriptRoot and $PSCommandPath now set to EXE path in both
-         PS 5.1 and PS 7 modes:
-         - PS 5.1: prepended to script string before posh.AddScript()
-           (SessionStateProxy cannot override automatic variables)
-         - PS 7: set in wrapper script before user code
-         $ScriptRoot is set in both modes as well (PS 5.1: SessionStateProxy;
-         PS 7: wrapper script). This makes all four root/path variables
-         consistent and pointing to the EXE location.
+         PS 5.1 and PS 7 modes. A marker comment is injected into the
+         embedded script after any using/param block at compile time and
+         is replaced at runtime by assignments for $ScriptRoot,
+         $PSScriptRoot and $PSCommandPath, so scripts with a param block
+         or using statements stay parseable.
 
 [NEW]    Incompatible parameter warnings: -conHost, -credentialGUI and
          -UNICODEEncoding are ignored when -ps7 is specified. A warning is
@@ -172,7 +168,7 @@ function Invoke-ps2exe
 
 <################################################################################>
 <##                                                                            ##>
-<##      PS2EXE-GUI v0.5.1.00                                                  ##>
+<##      PS2EXE-GUI v0.5.1.1                                                  ##>
 <##      Written by: Ingo Karstein (http://blog.karstein-consulting.com)       ##>
 <##      Reworked and GUI support by Markus Scholtes                           ##>
 <##      PowerShell 7+ support (-ps7) added by Andrew Afanasiev				   ##>
@@ -185,7 +181,7 @@ function Invoke-ps2exe
 
     if (!$nested)
     {
-        Write-Output "PS2EXE-GUI v0.5.1.00 by Ingo Karstein, reworked and GUI support by Markus Scholtes, PowerShell 7+ support (-ps7) added by Andrew Afanasiev`n"
+        Write-Output "PS2EXE-GUI v0.5.1.1 by Ingo Karstein, reworked and GUI support by Markus Scholtes, PowerShell 7+ support (-ps7) added by Andrew Afanasiev`n"
     }
     else
     {
@@ -209,6 +205,34 @@ function Invoke-ps2exe
         {
             Write-Warning "-UNICODEEncoding is not applicable with -ps7 (pwsh.exe manages its own encoding). Ignoring -UNICODEEncoding."
             $UNICODEEncoding = $FALSE
+        }
+        if ($noOutput)
+        {
+            Write-Warning "-noOutput is not implemented with -ps7 (pwsh.exe output is passed through unchanged). Ignoring -noOutput."
+            $noOutput = $FALSE
+        }
+        if ($noError)
+        {
+            Write-Warning "-noError is not implemented with -ps7 (pwsh.exe output is passed through unchanged). Ignoring -noError."
+            $noError = $FALSE
+        }
+        if ($exitOnCancel)
+        {
+            Write-Warning "-exitOnCancel is not applicable with -ps7 (input boxes are not used). Ignoring -exitOnCancel."
+            $exitOnCancel = $FALSE
+        }
+        if ($configFile)
+        {
+            Write-Warning "-configFile is not applicable with -ps7 (no .config file is generated for the stub). Ignoring -configFile."
+            $configFile = $FALSE
+        }
+        if ($STA -or $MTA)
+        {
+            Write-Warning "-STA/-MTA are not applicable with -ps7 (apartment state is managed by pwsh.exe). Ignoring -STA/-MTA."
+        }
+        if ($noConsole)
+        {
+            Write-Warning "With -ps7 and -noConsole interactive input (e.g. Read-Host) only works when the executable is started from a console, otherwise pwsh.exe has no usable stdin."
         }
     }
 
@@ -297,7 +321,7 @@ function Invoke-ps2exe
 
         $CallParam += " -nested"
 
-        powershell.exe -Command "if ((Get-Command -Name 'Invoke-ps2exe' -ErrorAction 'SilentlyContinue').Length -eq 0) { Import-Module '$PSScriptRoot\ps2exe.psm1' }; &'$($MyInvocation.MyCommand.Name)' $CallParam"
+        powershell.exe -Command "if (@(Get-Command -Name 'Invoke-ps2exe' -ErrorAction 'SilentlyContinue').Length -eq 0) { Import-Module '$PSScriptRoot\ps2exe.psm1' }; &'$($MyInvocation.MyCommand.Name)' $CallParam"
         return
     }
 
@@ -391,13 +415,13 @@ function Invoke-ps2exe
             return
         }
     }
-    if (!$CFGFILE -and $longPaths)
+    if (!$CFGFILE -and $longPaths -and !$ps7)
     {
         Write-Warning "Forcing generation of a config file, since the option -longPaths requires this"
         $CFGFILE = $TRUE
     }
 
-    if (!$CFGFILE -and $winFormsDPIAware)
+    if (!$CFGFILE -and $winFormsDPIAware -and !$ps7)
     {
         Write-Warning "Forcing generation of a config file, since the option -winFormsDPIAware requires this"
         $CFGFILE = $TRUE
@@ -552,7 +576,53 @@ function Invoke-ps2exe
     }
 
     Write-Output "Reading input file $inputFile"
-    [VOID]$cp.EmbeddedResources.Add($inputFile)
+
+    # Read the script and inject a marker comment after any leading using
+    # statements and param block (statements before them would be a parse
+    # error). At runtime the marker is replaced by assignments for $ScriptRoot,
+    # $PSScriptRoot and $PSCommandPath, or removed in help mode.
+    $reader = New-Object System.IO.StreamReader($inputFile, $TRUE)
+    $scriptContent = $reader.ReadToEnd()
+    $reader.Close()
+
+    $tokens = $NULL
+    $parseErrors = $NULL
+    $scriptAst = [System.Management.Automation.Language.Parser]::ParseInput($scriptContent, [REF]$tokens, [REF]$parseErrors)
+    $injectOffset = 0
+    if ($scriptAst)
+    {
+        if ($scriptAst.ParamBlock)
+        {
+            $injectOffset = $scriptAst.ParamBlock.Extent.EndOffset
+        }
+        $usingAsts = $scriptAst.FindAll({ $args[0] -is [System.Management.Automation.Language.UsingStatementAst] }, $FALSE)
+        if ($usingAsts)
+        {
+            $lastUsingEnd = ($usingAsts | ForEach-Object { $_.Extent.EndOffset } | Measure-Object -Maximum).Maximum
+            if ($lastUsingEnd -gt $injectOffset) { $injectOffset = $lastUsingEnd }
+        }
+    }
+    if ($parseErrors -and $parseErrors.Count -gt 0)
+    {
+        Write-Warning "The input file contains PowerShell syntax errors, the generated executable may fail at runtime:"
+        foreach ($pe in $parseErrors) { Write-Warning "  line $($pe.Extent.StartLineNumber): $($pe.Message)" }
+    }
+
+    # Insert the marker on its own line. EndOffset points directly after the
+    # last character of the using/param statement, so without a leading newline
+    # the bootstrap statements would end up on the same line as the statement
+    # after replacement (e.g. "using namespace System.IO$ScriptRoot = ..."
+    # does not parse).
+    $marker = "# PS2EXE: script path variables`r`n"
+    if ($injectOffset -gt 0) { $marker = "`r`n" + $marker }
+    $scriptContent = $scriptContent.Insert($injectOffset, $marker)
+
+    # embed the transformed script under the original file name (resource name)
+    $embedDir = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), "PS2EXE_" + [System.Guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $embedDir | Out-Null
+    $embeddedScriptFile = [System.IO.Path]::Combine($embedDir, [System.IO.Path]::GetFileName($inputFile))
+    [System.IO.File]::WriteAllText($embeddedScriptFile, $scriptContent, (New-Object System.Text.UTF8Encoding($TRUE)))
+    [VOID]$cp.EmbeddedResources.Add($embeddedScriptFile)
 
     $EMBEDSECTION = ""
     if ($embedFiles -is [HASHTABLE])
@@ -570,18 +640,16 @@ function Invoke-ps2exe
     }
 
     # --- Culture setup ---
-    # $culture   : C# statements for the original in-process host (PS 5.1 mode)
-    # $culturePS : PowerShell statements prepended to the wrapper script (PS7 mode)
+    # $culture: C# statements for the in-process host (PS 5.1 mode).
+    # In PS7 mode the culture statements are inserted at runtime together with
+    # the path variables when the marker in the embedded script is replaced.
     $culture = ""
-    $culturePS = ""
     if ($lcid)
     {
         $culture = @"
 System.Threading.Thread.CurrentThread.CurrentCulture = System.Globalization.CultureInfo.GetCultureInfo($lcid);
 System.Threading.Thread.CurrentThread.CurrentUICulture = System.Globalization.CultureInfo.GetCultureInfo($lcid);
 "@
-        # For PS7 mode: prepend culture setup to the wrapper script
-        $culturePS = "[System.Threading.Thread]::CurrentThread.CurrentCulture = [System.Globalization.CultureInfo]::GetCultureInfo($lcid);\r\n[System.Threading.Thread]::CurrentThread.CurrentUICulture = [System.Globalization.CultureInfo]::GetCultureInfo($lcid);\r\n"
     }
 
     # ==================================================================
@@ -629,55 +697,173 @@ namespace PS2EXE_PS7
 {
     internal class Program
     {
+        // Check a directory for pwsh.exe, return full path or null
+        private static string CheckPwshDir(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return null;
+            string pwsh = Path.Combine(path.TrimEnd('\\'), "pwsh.exe");
+            return File.Exists(pwsh) ? pwsh : null;
+        }
+
+        // Select the best pwsh.exe from the documented MSI registry keys
+        // "SOFTWARE\Microsoft\PowerShellCore\InstalledVersions\<GUID>" (PowerShell 7.1+).
+        // Every installed instance (different version or architecture) gets its own
+        // GUID subkey with the values "SemanticVersion" and "InstallLocation".
+        // The instance with the highest stable version wins, prerelease versions are
+        // only considered when no stable version is installed.
+        private static string FindPwshInInstalledVersions(Microsoft.Win32.RegistryKey baseKey)
+        {
+            string bestPath = null;
+            System.Version bestVersion = null;
+            bool bestPreview = true;
+
+            using (Microsoft.Win32.RegistryKey versionsKey = baseKey.OpenSubKey(@"SOFTWARE\Microsoft\PowerShellCore\InstalledVersions"))
+            {
+                if (versionsKey == null) return null;
+
+                foreach (string guid in versionsKey.GetSubKeyNames())
+                {
+                    using (Microsoft.Win32.RegistryKey instKey = versionsKey.OpenSubKey(guid))
+                    {
+                        if (instKey == null) continue;
+
+                        string pwsh = CheckPwshDir(instKey.GetValue("InstallLocation") as string);
+                        if (pwsh == null) continue;
+
+                        string semVer = instKey.GetValue("SemanticVersion") as string;
+                        System.Version v = null;
+                        bool preview = false;
+                        if (!string.IsNullOrEmpty(semVer))
+                        {
+                            // strip a prerelease suffix, e.g. "7.5.0-preview.3" -> "7.5.0"
+                            string verPart = semVer.Split('-')[0].Trim();
+                            System.Version.TryParse(verPart, out v);
+                            preview = semVer.IndexOf('-') >= 0;
+                        }
+
+                        bool better;
+                        if (bestPath == null)
+                            better = true;
+                        else if (v == null)
+                            better = false;
+                        else if (bestVersion == null)
+                            better = true;
+                        else if (preview != bestPreview)
+                            better = !preview;
+                        else
+                            better = v > bestVersion;
+
+                        if (better)
+                        {
+                            bestPath = pwsh;
+                            bestVersion = v;
+                            bestPreview = preview;
+                        }
+                    }
+                }
+            }
+
+            return bestPath;
+        }
+
         // Find pwsh.exe (PowerShell 7+) install path via registry or well-known paths
         private static string FindPwshExe()
         {
-            // Try registry: per-machine install
-            try
+            // Prefer the documented "PowerShellCore\InstalledVersions" keys written by the
+            // MSI installer since PowerShell 7.1, then the legacy "PowerShell\7" key (its
+            // default value holds the install dir, a named "Path" value is checked as a
+            // fallback). The 64-bit registry view is used so that 32-bit stubs find 64-bit
+            // installs (a 32-bit process would be redirected to Wow6432Node otherwise).
+            foreach (Microsoft.Win32.RegistryHive hive in new Microsoft.Win32.RegistryHive[] { Microsoft.Win32.RegistryHive.LocalMachine, Microsoft.Win32.RegistryHive.CurrentUser })
             {
-                using (Microsoft.Win32.RegistryKey key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\PowerShell\7"))
+                try
                 {
-                    string path = (key != null) ? (key.GetValue("Path") as string) : null;
-                    if (!string.IsNullOrEmpty(path))
+                    using (Microsoft.Win32.RegistryKey baseKey = Microsoft.Win32.RegistryKey.OpenBaseKey(hive, Microsoft.Win32.RegistryView.Registry64))
                     {
-                        string pwsh = Path.Combine(path.TrimEnd('\\'), "pwsh.exe");
-                        if (File.Exists(pwsh)) return pwsh;
+                        string pwsh = FindPwshInInstalledVersions(baseKey);
+                        if (pwsh != null) return pwsh;
+
+                        using (Microsoft.Win32.RegistryKey key = baseKey.OpenSubKey(@"SOFTWARE\Microsoft\PowerShell\7"))
+                        {
+                            if (key != null)
+                            {
+                                pwsh = CheckPwshDir(key.GetValue(null) as string);
+                                if (pwsh == null) pwsh = CheckPwshDir(key.GetValue("Path") as string);
+                                if (pwsh != null) return pwsh;
+                            }
+                        }
                     }
                 }
+                catch { }
             }
-            catch { }
 
-            // Try registry: per-user install
-            try
-            {
-                using (Microsoft.Win32.RegistryKey key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"SOFTWARE\Microsoft\PowerShell\7"))
-                {
-                    string path = (key != null) ? (key.GetValue("Path") as string) : null;
-                    if (!string.IsNullOrEmpty(path))
-                    {
-                        string pwsh = Path.Combine(path.TrimEnd('\\'), "pwsh.exe");
-                        if (File.Exists(pwsh)) return pwsh;
-                    }
-                }
-            }
-            catch { }
-
-            // Try well-known paths
+            // Try well-known paths (covers ZIP/portable installs and versions without
+            // registry entries, e.g. 7.0.x)
             string[] candidates = {
                 @"C:\Program Files\PowerShell\7\pwsh.exe",
                 @"C:\Program Files\PowerShell\7-preview\pwsh.exe",
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"Microsoft\PowerShell\7\pwsh.exe")
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"Microsoft\PowerShell\7\pwsh.exe"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"Microsoft\WindowsApps\pwsh.exe")
             };
             foreach (string c in candidates)
                 if (File.Exists(c)) return c;
 
+            // Try pwsh.exe found on the PATH (covers winget/scoop/dotnet tool installs)
+            try
+            {
+                string pathEnv = Environment.GetEnvironmentVariable("PATH");
+                if (!string.IsNullOrEmpty(pathEnv))
+                {
+                    foreach (string dir in pathEnv.Split(';'))
+                    {
+                        string pwsh = CheckPwshDir(dir);
+                        if (pwsh != null) return pwsh;
+                    }
+                }
+            }
+            catch { }
+
             return null;
+        }
+
+        // Quote an argument for the Windows command line following the CRT rules:
+        // backslashes preceding a quote (including the closing one) are doubled
+        private static string QuoteArgument(string arg)
+        {
+            if (string.IsNullOrEmpty(arg)) return "\"\"";
+            if (!arg.Contains(" ") && !arg.Contains("\"") && !arg.Contains("\t")) return arg;
+            StringBuilder sb = new StringBuilder();
+            sb.Append('"');
+            int backslashes = 0;
+            foreach (char c in arg)
+            {
+                if (c == '\\')
+                {
+                    backslashes++;
+                    continue;
+                }
+                if (c == '"')
+                {
+                    sb.Append('\\', backslashes*2 + 1);
+                    sb.Append('"');
+                    backslashes = 0;
+                    continue;
+                }
+                sb.Append('\\', backslashes);
+                backslashes = 0;
+                sb.Append(c);
+            }
+            sb.Append('\\', backslashes*2);
+            sb.Append('"');
+            return sb.ToString();
         }
 
         [STAThread]
         private static int Main(string[] args)
         {
  $(if (!$noVisualStyles -and $noConsole) { "			Application.EnableVisualStyles();" })
+
+            AppDomain.CurrentDomain.UnhandledException += new UnhandledExceptionEventHandler(CurrentDomain_UnhandledException);
 
             // --- Find PowerShell 7+ runtime ---
             string pwshExe = FindPwshExe();
@@ -759,14 +945,21 @@ namespace PS2EXE_PS7
             // --- Handle -extract option: save script to file and exit ---
             if (!string.IsNullOrEmpty(extractFN))
             {
-                System.IO.File.WriteAllText(extractFN, script);
+                // write with BOM so Windows PowerShell detects the encoding as well
+                System.IO.File.WriteAllText(extractFN, script, new System.Text.UTF8Encoding(true));
                 return 0;
             }
 
-            // --- Prepare wrapper script with $ScriptRoot, $PSScriptRoot, $PSCommandPath and culture setup ---
-            string scriptRoot = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
-            string exePath = Assembly.GetExecutingAssembly().Location;
-            string cultureSetup = "$culturePS";
+            // --- Set path variables for the child process ---
+            // The embedded script contains a marker comment injected at compile time
+            // after any using/param block. In execution mode the marker is replaced
+            // by assignments reading these environment variables, so scripts with a
+            // param block or using statements stay parseable.
+            string scriptRoot = AppDomain.CurrentDomain.BaseDirectory;
+            if (scriptRoot.Length > 3) scriptRoot = scriptRoot.TrimEnd('\\');
+            Environment.SetEnvironmentVariable("PS2EXE_ScriptRoot", scriptRoot);
+            Environment.SetEnvironmentVariable("PS2EXE_PSScriptRoot", scriptRoot);
+            Environment.SetEnvironmentVariable("PS2EXE_PSCommandPath", Assembly.GetExecutingAssembly().Location);
 
             // Write wrapper script to temp file
             string tempScript = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
@@ -775,23 +968,15 @@ namespace PS2EXE_PS7
             string wrapperScript;
             if (bHelp)
             {
-                // Help mode: define function and call Get-Help
-                wrapperScript = cultureSetup +
-                    "`$ScriptRoot = '" + scriptRoot.Replace("'", "''") + "'\r\n" +
-                    "`$PSScriptRoot = '" + scriptRoot.Replace("'", "''") + "'\r\n" +
-                    "`$PSCommandPath = '" + exePath.Replace("'", "''") + "'\r\n" +
-                    "function " + System.AppDomain.CurrentDomain.FriendlyName + " {\r\n" +
-                    script + "\r\n}\r\n" +
+                // Help mode: define function and call Get-Help, remove the marker line
+                wrapperScript = "function " + System.AppDomain.CurrentDomain.FriendlyName + " {\r\n" +
+                    script.Replace("# PS2EXE: script path variables\r\n", "") + "\r\n}\r\n" +
                     "Get-Help " + System.AppDomain.CurrentDomain.FriendlyName + " " + sHelp + " | Out-String";
             }
             else
             {
-                // Normal execution mode
-                wrapperScript = cultureSetup +
-                    "`$ScriptRoot = '" + scriptRoot.Replace("'", "''") + "'\r\n" +
-                    "`$PSScriptRoot = '" + scriptRoot.Replace("'", "''") + "'\r\n" +
-                    "`$PSCommandPath = '" + exePath.Replace("'", "''") + "'\r\n" +
-                    script;
+                // Normal execution mode: replace the marker with the variable bootstrap
+                wrapperScript = script.Replace("# PS2EXE: script path variables", "`$ScriptRoot = `$env:PS2EXE_ScriptRoot\r\n`$PSScriptRoot = `$env:PS2EXE_PSScriptRoot\r\n`$PSCommandPath = `$env:PS2EXE_PSCommandPath\r\n$(if ($lcid) {"[System.Threading.Thread]::CurrentThread.CurrentCulture = [System.Globalization.CultureInfo]::GetCultureInfo($lcid)\r\n[System.Threading.Thread]::CurrentThread.CurrentUICulture = [System.Globalization.CultureInfo]::GetCultureInfo($lcid)\r\n"})");
             }
 
             System.IO.File.WriteAllText(tempScript, wrapperScript, System.Text.Encoding.UTF8);
@@ -802,13 +987,7 @@ namespace PS2EXE_PS7
 
             // Add script arguments (after -end separator)
             for (int i = separator; i < args.Length; i++)
-            {
-                string arg = args[i];
-                if (arg.Contains(" ") || arg.Contains("\""))
-                    pwshArgs.Append(" \"" + arg.Replace("\"", "\\\"") + "\"");
-                else
-                    pwshArgs.Append(" " + arg);
-            }
+                pwshArgs.Append(" " + QuoteArgument(args[i]));
 
             // --- Configure and launch pwsh.exe ---
             ProcessStartInfo psi = new ProcessStartInfo();
@@ -824,6 +1003,8 @@ namespace PS2EXE_PS7
             psi.RedirectStandardOutput = true;
             psi.RedirectStandardError = true;
             psi.CreateNoWindow = true;
+            psi.StandardOutputEncoding = System.Text.Encoding.UTF8;
+            psi.StandardErrorEncoding = System.Text.Encoding.UTF8;
 "@ })
 
             Process process;
@@ -843,13 +1024,24 @@ namespace PS2EXE_PS7
             }
 
  $(if ($noConsole) {@"
-            // GUI mode: capture all output
+            // GUI mode: capture all output. Stderr is read asynchronously to avoid
+            // a deadlock when the script fills the stderr pipe while stdout is read.
+            StringBuilder stderrBuilder = new StringBuilder();
+            process.ErrorDataReceived += delegate(object sender, DataReceivedEventArgs e)
+            {
+                if (e.Data != null) stderrBuilder.Append(e.Data).Append('\n');
+            };
+            process.BeginErrorReadLine();
             string stdoutOutput = process.StandardOutput.ReadToEnd();
-            string stderrOutput = process.StandardError.ReadToEnd();
+            string stderrOutput = "";
 "@ })
 
             process.WaitForExit();
             int exitCode = process.ExitCode;
+ $(if ($noConsole) {@"
+            // async stderr read is guaranteed to be complete after WaitForExit()
+            stderrOutput = stderrBuilder.ToString();
+"@ })
 
             // --- Clean up temp script ---
             try { File.Delete(tempScript); } catch { }
@@ -867,9 +1059,9 @@ namespace PS2EXE_PS7
             {
  $(if (!$noConsole) {@"
                 Console.WriteLine("Hit any key to exit...");
-                Console.ReadKey();
+                if (!Console.IsInputRedirected) Console.ReadKey();
 "@ } else {@"
-                MessageBox.Show("Click OK to exit...", AppDomain.CurrentDomain.FriendlyName);
+                MessageBox.Show("Click OK to exit...", System.AppDomain.CurrentDomain.FriendlyName);
 "@ })
             }
 
@@ -1297,7 +1489,10 @@ namespace ModuleNameSpace
             get
             {
  $(if (!$noConsole){ @"
-                return new System.Management.Automation.Host.Size(Console.BufferWidth, Console.BufferWidth);
+                if (Console.IsOutputRedirected)
+                    return new System.Management.Automation.Host.Size(120, 84);
+                else
+                    return new System.Management.Automation.Host.Size(Console.BufferWidth, Console.BufferHeight);
 "@ } else {@"
                 return new System.Management.Automation.Host.Size(120, 84);
 "@ })
@@ -2793,7 +2988,7 @@ namespace ModuleNameSpace
         {
             get
             {
-                return new Version(0, 5, 0, 35);
+                return new Version(0, 5, 1, 1);
             }
         }
 
@@ -2892,9 +3087,7 @@ namespace ModuleNameSpace
                     $(if ($STA -or $MTA) {"myRunSpace.ApartmentState = System.Threading.ApartmentState."})$(if ($STA){"STA"})$(if ($MTA){"MTA"});
                     myRunSpace.Open();
 
-                    // Add $ScriptRoot pointing to the EXE directory (SessionStateProxy
-                    // cannot override the automatic $PSScriptRoot / $PSCommandPath,
-                    // those are prepended to the script below).
+                    // Add $ScriptRoot pointing to the EXE directory
                     myRunSpace.SessionStateProxy.SetVariable("ScriptRoot", System.AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\'));
 
                     using (PowerShell posh = PowerShell.Create())
@@ -2997,15 +3190,23 @@ namespace ModuleNameSpace
 
                                 if (!string.IsNullOrEmpty(extractFN))
                                 {
-                                    System.IO.File.WriteAllText(extractFN, script);
+                                    // write with BOM so Windows PowerShell detects the encoding as well
+                                    System.IO.File.WriteAllText(extractFN, script, new System.Text.UTF8Encoding(true));
                                     return 0;
                                 }
 
+                                // Provide the path variables for the injected bootstrap via environment
+                                string scriptRootDir = System.AppDomain.CurrentDomain.BaseDirectory;
+                                if (scriptRootDir.Length > 3) scriptRootDir = scriptRootDir.TrimEnd('\\');
+                                Environment.SetEnvironmentVariable("PS2EXE_ScriptRoot", scriptRootDir);
+                                Environment.SetEnvironmentVariable("PS2EXE_PSScriptRoot", scriptRootDir);
+                                Environment.SetEnvironmentVariable("PS2EXE_PSCommandPath", executingAssembly.Location);
+
                                 if (bHelp)
                                 { // help selected
-                                    posh.AddScript("`$PSScriptRoot = '" + System.AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\') + "'\r\n`$PSCommandPath = '" + executingAssembly.Location + "'\r\nfunction " + System.AppDomain.CurrentDomain.FriendlyName + "{" + script + "}; Get-Help " + System.AppDomain.CurrentDomain.FriendlyName + " " + sHelp + " | Out-String");
+                                    posh.AddScript("function " + System.AppDomain.CurrentDomain.FriendlyName + "{" + script.Replace("# PS2EXE: script path variables\r\n", "") + "}; Get-Help " + System.AppDomain.CurrentDomain.FriendlyName + " " + sHelp + " | Out-String");
                                 } else { // execution selected
-                                    posh.AddScript("`$PSScriptRoot = '" + System.AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\') + "'\r\n`$PSCommandPath = '" + executingAssembly.Location + "'\r\n" + script);
+                                    posh.AddScript(script.Replace("# PS2EXE: script path variables", "`$ScriptRoot = `$env:PS2EXE_ScriptRoot\r\n`$PSScriptRoot = `$env:PS2EXE_PSScriptRoot\r\n`$PSCommandPath = `$env:PS2EXE_PSCommandPath\r\n"));
                                 }                            }
                         }
 
@@ -3098,7 +3299,7 @@ namespace ModuleNameSpace
             {
  $(if (!$noConsole) {@"
                 Console.WriteLine("Hit any key to exit...");
-                Console.ReadKey();
+                if (!Console.IsInputRedirected) Console.ReadKey();
 "@ } else {@"
                 MessageBox.Show("Click OK to exit...", System.AppDomain.CurrentDomain.FriendlyName);
 "@ })
@@ -3145,7 +3346,12 @@ namespace ModuleNameSpace
 
     Write-Output "Compiling file...`n"
     $cr = $cop.CompileAssemblyFromSource($cp, $programFrame)
-    if ($cr.Errors.Count -gt 0)
+
+    # remove the temporary copy of the embedded script
+    Remove-Item -LiteralPath $embeddedScriptFile -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $embedDir -Force -Recurse -ErrorAction SilentlyContinue
+
+    if ($cr.Errors.HasErrors)
     {
         if (Test-Path -LiteralPath $outputFile)
         {
