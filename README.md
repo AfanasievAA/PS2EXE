@@ -6,10 +6,10 @@ Module version.
 Original Authors: Ingo Karstein, Markus Scholtes. You find the original script based version here (https://github.com/MScholtes/TechNet-Gallery).
 Fork Author: Andrew Afanasiev
 
-Version: 1.0.18
+Version: 1.0.19
 (PowerShell 7+ support)
 
-Date: 2026.09.16
+Date: 2026.10.06
 
 ## Installation
 
@@ -184,6 +184,9 @@ $Host.UI.RawUI.FlushInputBuffer()
 ```
 
 ## Changes:
+### 1.0.19 / 2026-10-06
+- bugfixes, more av friendly output
+
 ### 1.0.18 - 2026-09-16
 - predefined variable $ScriptRoot as replacement for $PSScriptRoot
 - powershell 7+ compiling support. new  -ps7 parameter: generates EXE that runs embedded script

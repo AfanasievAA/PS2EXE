@@ -12,7 +12,7 @@
 RootModule = 'ps2exe.psm1'
 
 # Version number of this module.
-ModuleVersion = '1.0.18'
+ModuleVersion = '1.0.19'
 
 # Supported PSEditions
 CompatiblePSEditions = @('Desktop', 'Core')
@@ -113,6 +113,8 @@ PrivateData = @{
 
 		# ReleaseNotes of this module
 		ReleaseNotes = @'
+# 1.0.19 / 2026-10-06
+- bugfixes, more av friendly output
 # 1.0.18 / 2026-09-16
 - new parameter -ps7 to generate an executable that runs the embedded script via pwsh.exe (PowerShell 7+)
 - PS7 mode: lightweight .NET Framework stub finds pwsh.exe via registry or well-known paths, extracts script to temp file, launches pwsh.exe and captures output in GUI mode

@@ -441,8 +441,9 @@ if ([Environment]::Is64BitOperatingSystem)
         $r = Invoke-ConsoleExe -Exe $exe -ExeArgs @("-extract:$extracted")
         $content = ''
         if (Test-Path -LiteralPath $extracted) { $content = [string](Get-Content -LiteralPath $extracted -Raw) }
-        $ok = ($r.Code -eq 0) -and $content.Contains('PS2EXE-TEST-OK') -and $content.Contains('# PS2EXE: script path variables')
-        @{ Ok = $ok; Details = "exit code: $($r.Code), extracted file present: $(Test-Path -LiteralPath $extracted)" }
+        $markerRemoved = -not $content.Contains('# PS2EXE: script path variables')
+        $ok = ($r.Code -eq 0) -and $content.Contains('PS2EXE-TEST-OK') -and $markerRemoved
+        @{ Ok = $ok; Details = "exit code: $($r.Code), extracted file present: $(Test-Path -LiteralPath $extracted), marker removed: $markerRemoved" }
     } }
  $Tests += @{ Id='T40'; Name='PS5: -embedFiles with environment variable target'; Run='console';
     Params=(New-TestParams $embedEnv 't40_embedenv' @{ embedFiles = @{ '%PS2EXE_TEST%\embed_env.txt' = $embedEnvSrc } });
@@ -486,8 +487,9 @@ if ([Environment]::Is64BitOperatingSystem)
         $r = Invoke-ConsoleExe -Exe $exe -ExeArgs @("-extract:$extracted")
         $content = ''
         if (Test-Path -LiteralPath $extracted) { $content = [string](Get-Content -LiteralPath $extracted -Raw) }
-        $ok = ($r.Code -eq 0) -and $content.Contains('PS2EXE-TEST-OK') -and $content.Contains('# PS2EXE: script path variables')
-        @{ Ok = $ok; Details = "exit code: $($r.Code), extracted file present: $(Test-Path -LiteralPath $extracted)" }
+        $markerRemoved = -not $content.Contains('# PS2EXE: script path variables')
+        $ok = ($r.Code -eq 0) -and $content.Contains('PS2EXE-TEST-OK') -and $markerRemoved
+        @{ Ok = $ok; Details = "exit code: $($r.Code), extracted file present: $(Test-Path -LiteralPath $extracted), marker removed: $markerRemoved" }
     } }
  $Tests += @{ Id='P16'; Name='PS7: -wait with redirected stdin'; Run='wait'; Params=(New-TestParams $basic 'p16_wait' @{ ps7 = $true }); Args=@('-wait'); ExpectText='PS2EXE-TEST-OK'; ExpectCode=0 }
 if ([Environment]::Is64BitOperatingSystem)

@@ -111,7 +111,8 @@ generate an executable that runs the embedded script via pwsh.exe (PowerShell 7+
 PowerShell 7+ must be installed on the target machine.
 In console mode: pwsh.exe inherits the console for interactive input/output.
 In GUI mode (-noConsole): output is captured and shown in message boxes.
-Note: -conHost and -credentialGUI are not applicable with -ps7.
+Note: -conHost, -credentialGUI, -UNICODEEncoding, -noOutput, -noError, -exitOnCancel,
+-configFile, -winFormsDPIAware and -STA/-MTA are not applicable with -ps7 and are ignored.
 .EXAMPLE
 Invoke-ps2exe C:\Data\MyScript.ps1
 Compiles C:\Data\MyScript.ps1 to C:\Data\MyScript.exe as console executable
@@ -122,14 +123,41 @@ Compiles C:\Data\MyScript.ps1 to C:\Data\MyScript7.exe as graphical executable t
 Win-PS2EXE
 Start graphical front end to Invoke-ps2exe
 .NOTES
-Version: 0.5.1.1
-Date: 2026.09.16
+Version: 0.5.1.2
+Date: 2026.10.06
 Author: Andrew Afanasiev
 Original Authors: Ingo Karstein, Markus Scholtes
 .LINK
 Original file at https://github.com/MScholtes/PS2EXE
-.CHANGELOG v0.5.1.1
+.CHANGELOG 
 ============================================
+[CHG]   PS7 mode: the execution policy is passed to pwsh.exe via the
+        documented PSExecutionPolicyPreference environment variable
+        instead of a literal "-ExecutionPolicy Bypass" command line
+        argument, and the temporary wrapper script gets a deterministic
+        name (executable name plus process id) instead of a random GUID.
+        Both changes remove static indicators that made antivirus
+        heuristics classify the generated stub as "obfuscated code".
+
+[FIX]   -extract now removes the injected "# PS2EXE: script path variables"
+        marker comment, so the extracted file matches the original input
+        script (both in PS 5.1 and in PS 7 mode).
+
+[FIX]   PS 5.1 mode: $PSScriptRoot and $PSCommandPath are now preset via
+        the runspace API before script execution, so they are already
+        visible in param block default values. The bootstrap injected
+        after the param block ran too late for that (previously only
+        $ScriptRoot was visible in default values).
+
+[FIX]   PS7 console mode: Ctrl+C no longer leaks the temporary wrapper
+        script. The stub cancels the console event, waits for pwsh.exe
+        to terminate by itself, then deletes the temp script and
+        forwards the exit code.
+
+[NEW]   PS7 mode: -winFormsDPIAware is now ignored with a warning like
+        the other parameters not applicable with -ps7 (no .config file
+        is generated for the stub).
+
 [NEW]    Added -ps7 parameter: generates EXE that runs embedded script
          via pwsh.exe (PowerShell 7+). PowerShell 7+ must be installed
          on the target machine.
@@ -152,9 +180,10 @@ Original file at https://github.com/MScholtes/PS2EXE
          $PSScriptRoot and $PSCommandPath, so scripts with a param block
          or using statements stay parseable.
 
-[NEW]    Incompatible parameter warnings: -conHost, -credentialGUI and
-         -UNICODEEncoding are ignored when -ps7 is specified. A warning is
-         emitted for each ignored parameter.
+[NEW]    Incompatible parameter warnings: -conHost, -credentialGUI,
+         -UNICODEEncoding, -noOutput, -noError, -exitOnCancel, -configFile,
+         -winFormsDPIAware and -STA/-MTA are ignored when -ps7 is specified.
+         A warning is emitted for each ignored parameter.
 #>
 function Invoke-ps2exe
 {
@@ -168,7 +197,7 @@ function Invoke-ps2exe
 
 <################################################################################>
 <##                                                                            ##>
-<##      PS2EXE-GUI v0.5.1.1                                                  ##>
+<##      PS2EXE-GUI v0.5.1.2                                                  ##>
 <##      Written by: Ingo Karstein (http://blog.karstein-consulting.com)       ##>
 <##      Reworked and GUI support by Markus Scholtes                           ##>
 <##      PowerShell 7+ support (-ps7) added by Andrew Afanasiev				   ##>
@@ -181,7 +210,7 @@ function Invoke-ps2exe
 
     if (!$nested)
     {
-        Write-Output "PS2EXE-GUI v0.5.1.1 by Ingo Karstein, reworked and GUI support by Markus Scholtes, PowerShell 7+ support (-ps7) added by Andrew Afanasiev`n"
+        Write-Output "PS2EXE-GUI v0.5.1.2 by Ingo Karstein, reworked and GUI support by Markus Scholtes, PowerShell 7+ support (-ps7) added by Andrew Afanasiev`n"
     }
     else
     {
@@ -225,6 +254,11 @@ function Invoke-ps2exe
         {
             Write-Warning "-configFile is not applicable with -ps7 (no .config file is generated for the stub). Ignoring -configFile."
             $configFile = $FALSE
+        }
+        if ($winFormsDPIAware)
+        {
+            Write-Warning "-winFormsDPIAware is not applicable with -ps7 (no .config file is generated for the stub, DPI awareness of the stub comes from -DPIAware). Ignoring -winFormsDPIAware."
+            $winFormsDPIAware = $FALSE
         }
         if ($STA -or $MTA)
         {
@@ -284,9 +318,11 @@ function Invoke-ps2exe
         return
     }
 
-    # --- Only redirect to Windows PowerShell when NOT in -ps7 mode ---
-    # In -ps7 mode the generated EXE is a stub that spawns pwsh.exe at runtime,
-    # so no SMA / ConsoleHost / System.Core references are needed at all.
+    # --- Redirect to Windows PowerShell when running under PowerShell Core ---
+    # Compilation via CSharpCodeProvider requires .NET Framework (CodeDom is not
+    # available in pwsh), so even in -ps7 mode the compile step itself runs in
+    # powershell.exe. -ps7 only changes the generated stub: it spawns pwsh.exe at
+    # runtime and needs no SMA / ConsoleHost / System.Core references.
     if (!$nested -and ($PSVersionTable.PSEdition -eq "Core"))
     { # starting Windows Powershell
         $CallParam = ""
@@ -945,8 +981,9 @@ namespace PS2EXE_PS7
             // --- Handle -extract option: save script to file and exit ---
             if (!string.IsNullOrEmpty(extractFN))
             {
+                // remove the injected marker so the extracted file matches the original script,
                 // write with BOM so Windows PowerShell detects the encoding as well
-                System.IO.File.WriteAllText(extractFN, script, new System.Text.UTF8Encoding(true));
+                System.IO.File.WriteAllText(extractFN, script.Replace("# PS2EXE: script path variables\r\n", ""), new System.Text.UTF8Encoding(true));
                 return 0;
             }
 
@@ -963,7 +1000,7 @@ namespace PS2EXE_PS7
 
             // Write wrapper script to temp file
             string tempScript = System.IO.Path.Combine(System.IO.Path.GetTempPath(),
-                System.AppDomain.CurrentDomain.FriendlyName + "_" + System.Guid.NewGuid().ToString("N") + ".ps1");
+                System.AppDomain.CurrentDomain.FriendlyName + "_" + System.Diagnostics.Process.GetCurrentProcess().Id.ToString() + ".ps1");
 
             string wrapperScript;
             if (bHelp)
@@ -982,8 +1019,13 @@ namespace PS2EXE_PS7
             System.IO.File.WriteAllText(tempScript, wrapperScript, System.Text.Encoding.UTF8);
 
             // --- Build pwsh.exe arguments ---
+            // Pass the execution policy via the documented environment variable instead of
+            // the command line: a literal "-ExecutionPolicy Bypass" embedded in the EXE is one
+            // of the strongest static indicators that makes antivirus heuristics classify the
+            // stub as an obfuscated script dropper.
+            Environment.SetEnvironmentVariable("PSExecutionPolicyPreference", "Bypass");
             StringBuilder pwshArgs = new StringBuilder();
-            pwshArgs.Append("-NoProfile -NoLogo -ExecutionPolicy Bypass -File \"" + tempScript + "\"");
+            pwshArgs.Append("-NoProfile -NoLogo -File \"" + tempScript + "\"");
 
             // Add script arguments (after -end separator)
             for (int i = separator; i < args.Length; i++)
@@ -1007,6 +1049,15 @@ namespace PS2EXE_PS7
             psi.StandardErrorEncoding = System.Text.Encoding.UTF8;
 "@ })
 
+ $(if (!$noConsole) {@"
+            // Keep the stub alive on Ctrl+C: pwsh.exe receives the same console event and
+            // terminates by itself, so the stub can wait for it, delete the temp script and
+            // forward the exit code (without this handler the temp script leaks on Ctrl+C)
+            Console.CancelKeyPress += new ConsoleCancelEventHandler(delegate(object sender, ConsoleCancelEventArgs e)
+            {
+                e.Cancel = true;
+            });
+"@ })
             Process process;
             try
             {
@@ -3089,6 +3140,12 @@ namespace ModuleNameSpace
 
                     // Add $ScriptRoot pointing to the EXE directory
                     myRunSpace.SessionStateProxy.SetVariable("ScriptRoot", System.AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\'));
+                    // Preset the path variables so they are already visible in param block default
+                    // values, the bootstrap injected after the param block runs too late for that
+                    string presetRoot = System.AppDomain.CurrentDomain.BaseDirectory;
+                    if (presetRoot.Length > 3) presetRoot = presetRoot.TrimEnd('\\');
+                    myRunSpace.SessionStateProxy.SetVariable("PSScriptRoot", presetRoot);
+                    myRunSpace.SessionStateProxy.SetVariable("PSCommandPath", Assembly.GetExecutingAssembly().Location);
 
                     using (PowerShell posh = PowerShell.Create())
                     {
@@ -3190,8 +3247,9 @@ namespace ModuleNameSpace
 
                                 if (!string.IsNullOrEmpty(extractFN))
                                 {
+                                    // remove the injected marker so the extracted file matches the original script,
                                     // write with BOM so Windows PowerShell detects the encoding as well
-                                    System.IO.File.WriteAllText(extractFN, script, new System.Text.UTF8Encoding(true));
+                                    System.IO.File.WriteAllText(extractFN, script.Replace("# PS2EXE: script path variables\r\n", ""), new System.Text.UTF8Encoding(true));
                                     return 0;
                                 }
 
