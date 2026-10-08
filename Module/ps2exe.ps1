@@ -1202,7 +1202,7 @@ function Invoke-ps2exe
                 # survives the call: its keys are the complete list of processed
                 # files (root and includes) used for the output reference timestamps
                 $mergeCache = @{}
-                $scriptContent = Expand-Includes -FilePath $inputFile -RootFolder $rootFolder -InputFolder $inputFolder -Cache $mergeCache -Requirements $scriptRequirements -ParamInfo $paramInfo
+                $scriptContent = Expand-Includes -FilePath $inputFile -RootFolder $rootFolder -InputFolder $inputFolder -Cache $mergeCache -IsRoot -Requirements $scriptRequirements -ParamInfo $paramInfo
             }
             catch
             {
