@@ -10,6 +10,10 @@ Version: 1.0.20
 (PowerShell 7+ support, include merging, comment stripping and preprocessed script saving)
 
 Date: 2026.10.08
+<img width="944" height="798" alt="image" src="https://github.com/user-attachments/assets/327d495a-389f-4623-a6ea-b2fc887565d9" />
+<img width="943" height="800" alt="image" src="https://github.com/user-attachments/assets/180dfff8-b94e-45df-8c3f-5ca540f623f8" />
+
+
 
 ## Installation
 
