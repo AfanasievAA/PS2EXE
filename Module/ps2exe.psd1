@@ -12,7 +12,7 @@
 RootModule = 'ps2exe.psm1'
 
 # Version number of this module.
-ModuleVersion = '1.0.19'
+ModuleVersion = '1.0.20'
 
 # Supported PSEditions
 CompatiblePSEditions = @('Desktop', 'Core')
@@ -36,10 +36,13 @@ Compiles Powershell scripts to standalone executables. Rework of the great scrip
 Or use Win-PS2EXE as a graphical front end to the compiler.
 With -ps7 a lightweight executable is generated that runs the embedded script via pwsh.exe (PowerShell 7+).
 PowerShell 7+ must be installed on the target machine when using -ps7.
+With -removeAllComments all comments are stripped from the input script before embedding (here-string bodies kept verbatim, #requires preserved).
+With -mergeIncludes every dot-sourced, call-operator or Import-Module file reference is recursively inlined into one self-contained script before embedding (implies -removeAllComments).
+With -savePreprocessedScript the preprocessed script is saved as a .ps1 file next to the output executable.
 '@
 
 # Minimum version of the Windows PowerShell engine required by this module
-PowerShellVersion = '3.0'
+PowerShellVersion = '5.1'
 
 # Name of the Windows PowerShell host required by this module
 # PowerShellHostName = ''
@@ -75,7 +78,7 @@ DotNetFrameworkVersion = '4.0'
 # NestedModules = @()
 
 # Functions to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no functions to export.
-FunctionsToExport = @('Invoke-PS2EXE')
+FunctionsToExport = @('Invoke-PS2EXE', 'Show-WinPS2EXE')
 
 # Cmdlets to export from this module, for best performance, do not use wildcards and do not delete the entry, use an empty array if there are no cmdlets to export.
 CmdletsToExport = @()
@@ -113,6 +116,13 @@ PrivateData = @{
 
 		# ReleaseNotes of this module
 		ReleaseNotes = @'
+# 1.0.20 / 2026-10-08
+- output file timestamps: the generated executable and the saved preprocessed script inherit the creation and modification times of the source script; with -mergeIncludes the newest times among all processed files (source and includes) are used
+- new script based graphical front end Win-PS2EXE.ps1 (WinForms, PowerShell 5.1+, no dependencies) replaces the legacy compiled Win-PS2EXE.exe; new exported function Show-WinPS2EXE, GUI settings persisted in %APPDATA%\ps2exe, command line preview window
+- new parameter -removeAllComments: strips all # line comments, <# #> block comments and #region/#endregion markers from the input script before embedding (here-string bodies kept verbatim, #requires directives preserved); scripts extracted with -extract will not match the original input file when preprocessing is active
+- new parameter -mergeIncludes: recursively inlines every dot-sourced, call-operator (&) or Import-Module file reference into one self-contained script before embedding; include paths are resolved relative to the including file first, then to the folder of the input file, then to the project root (nearest parent folder containing a "source" subfolder); param blocks of included files are converted to explicit parameter assignments at every inclusion point, all #requires lines are merged into one consolidated header, "using namespace" lines of included files are hoisted into it while other using forms and Export-ModuleMember calls are dropped with a warning; implies -removeAllComments; merge failures are reported via Write-Error and abort compilation; note that $PSScriptRoot, $PSCommandPath and $ScriptRoot inside included code (including param block defaults) resolve to the executable location after merging
+- new parameter -savePreprocessedScript: saves the preprocessed script (result of -removeAllComments or -mergeIncludes) as a .ps1 file next to the output executable before the PS2EXE path variable marker is injected, so it remains a valid standalone script; ignored with a warning when no preprocessing switch is set
+- version numbers unified: the compiler banner and the generated host now report the module version 1.0.20 instead of the legacy PS2EXE-GUI v0.5.1.x numbering
 # 1.0.19 / 2026-10-06
 - bugfixes, more av friendly output
 # 1.0.18 / 2026-09-16

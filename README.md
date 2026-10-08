@@ -1,15 +1,15 @@
 # PS2EXE
-Rework of the great script of Ingo Karstein with GUI support. The GUI output and input is activated with the `-noConsole` switch, real Windows executables are generated. By default compiles PowerShell 5.x compatible scripts. With `-ps7` a lightweight executable is generated that runs the embedded script via `pwsh.exe` (PowerShell 7+); PowerShell 7+ must be installed on the target machine. With optional graphical front end Win-PS2EXE.
+Rework of the great script of Ingo Karstein with GUI support. The GUI output and input is activated with the `-noConsole` switch, real Windows executables are generated. By default compiles PowerShell 5.x compatible scripts. With `-ps7` a lightweight executable is generated that runs the embedded script via `pwsh.exe` (PowerShell 7+); PowerShell 7+ must be installed on the target machine. With optional graphical front end Win-PS2EXE (a script based WinForms GUI, no dependencies).
 
 Module version.
 
 Original Authors: Ingo Karstein, Markus Scholtes. You find the original script based version here (https://github.com/MScholtes/TechNet-Gallery).
 Fork Author: Andrew Afanasiev
 
-Version: 1.0.19
-(PowerShell 7+ support)
+Version: 1.0.20
+(PowerShell 7+ support, include merging, comment stripping and preprocessed script saving)
 
-Date: 2026.10.06
+Date: 2026.10.08
 
 ## Installation
 
@@ -27,18 +27,36 @@ compiles "source.ps1" into the executable target.exe (if ".\target.exe" is omitt
 
 or start Win-PS2EXE for a graphical front end with
 ```powershell
-  Win-PS2EXE
+  Run_WIN-PS2EXE.cmd
 ```
+The GUI is a WinForms application written in PowerShell 5.1+ (no compiled binary, no dependencies). It runs compilation on a background runspace and shows a report window with all errors and warnings; the report text can be selected and copied. Every parameter and option shows a hover tooltip with its description from the documentation. Parameters not applicable with `-ps7` are dimmed automatically. The last used settings are persisted in `%APPDATA%\ps2exe\Win-PS2EXE.settings.xml`. The "Show command line" button displays the exact `Invoke-ps2exe` call the "Compile" button would run, so it can be copied and reused in scripts or CI.
+
+### Compile a self-contained executable from a multi-file script
+
+```powershell
+Invoke-ps2exe -inputFile .\MyScript.ps1 -outputFile .\MyScript.exe -mergeIncludes
+```
+`-mergeIncludes` recursively inlines every dot-sourced (`. .\file.ps1`), call-operator (`& .\file.ps1`) and `Import-Module .\file.ps1/.psm1` reference into one self-contained script before embedding. Include paths are resolved relative to the including file first, then to the folder of the input file, then to the project root (the nearest parent folder containing a sub-folder `source`, walking up from the input file). A `.psd1` manifest is redirected to its sibling `.psm1`/`.ps1` module file. Param blocks of included files are converted to explicit parameter assignments at every inclusion point, all `#requires` lines are merged into one consolidated header, `using namespace` lines of included files are hoisted into that header while other `using` forms and `Export-ModuleMember` calls are dropped with a warning. The switch implies `-removeAllComments`; merge failures are reported via `Write-Error` and abort compilation.
+
+Note: in the merged single script `$PSScriptRoot`, `$PSCommandPath` and `$ScriptRoot` inside included code (including param block default values) resolve to the location of the compiled executable, not to the original folder of the included file.
+
+To only strip comments without merging, use `-removeAllComments`.
+
+To save the result of `-removeAllComments` or `-mergeIncludes` as a `.ps1` file next to the output executable, add `-savePreprocessedScript`. The file is written before the PS2EXE path variable marker is injected, so it remains a valid standalone PowerShell script (UTF-8 with BOM):
+
+```powershell
+Invoke-ps2exe -inputFile .\MyScript.ps1 -outputFile .\MyScript.exe -mergeIncludes -savePreprocessedScript
+
 ### Compile a PowerShell 7+ executable (console mode)
 
 ```powershell
 Invoke-ps2exe -inputFile .\MyScript.ps1 -outputFile .\MyScript7.exe -ps7
 ```
-The resulting executable is a lightweight .NET Framework stub that locates `pwsh.exe` (PowerShell 7+) on the target machine, extracts the embedded script to a temporary wrapper `.ps1` and runs it via `pwsh.exe -NoProfile -NoLogo -ExecutionPolicy Bypass -File <temp_script>`.
+The resulting executable is a lightweight .NET Framework stub that locates `pwsh.exe` (PowerShell 7+) on the target machine, extracts the embedded script to a temporary wrapper `.ps1` and runs it via `pwsh.exe -NoProfile -NoLogo -File <temp_script>`. The execution policy is passed to `pwsh.exe` through the documented `PSExecutionPolicyPreference` environment variable instead of a command line argument.
 
 - PowerShell 7+ must be installed on the target machine.
 - In console mode `pwsh.exe` inherits the console for interactive input/output.
-- `-conHost`, `-credentialGUI` and `-UNICODEEncoding` are not applicable with `-ps7` and are ignored with a warning.
+- `-conHost`, `-credentialGUI`, `-UNICODEEncoding`, `-noOutput`, `-noError`, `-exitOnCancel`, `-configFile`, `-winFormsDPIAware` and `-STA`/`-MTA` are not applicable with `-ps7` and are ignored with a warning.
 
 ### Compile a PowerShell 7+ GUI executable (no console window)
 
@@ -56,7 +74,7 @@ ps2exe [-inputFile] '<file_name>' [[-outputFile] '<file_name>']
        [-company '<company>'] [-product '<product>'] [-copyright '<copyright>'] [-trademark '<trademark>']
        [-version '<version>'] [-configFile] [-noOutput] [-noError] [-noVisualStyles] [-exitOnCancel]
        [-DPIAware] [-winFormsDPIAware] [-requireAdmin] [-supportOS] [-virtualize] [-longPaths]
-       [-ps7]
+       [-ps7] [-removeAllComments] [-mergeIncludes] [-savePreprocessedScript]
 ```
 
 ```
@@ -84,11 +102,17 @@ UNICODEEncoding = encode output as UNICODE in console mode
       trademark = trademark information (displayed in details tab of Windows Explorer's properties dialog)
         version = version information (displayed in details tab of Windows Explorer's properties dialog)
      configFile = write config file (<outputfile>.exe.config)
+                  not applicable with -ps7
        noOutput = the resulting executable will generate no standard output (includes verbose and information channel)
+                  not applicable with -ps7
         noError = the resulting executable will generate no error output (includes warning and debug channel)
+                  not applicable with -ps7
  noVisualStyles = disable visual styles for a generated windows GUI application (only with -noConsole)
    exitOnCancel = exits program when Cancel or "X" is selected in a Read-Host input box (only with -noConsole)
+                  not applicable with -ps7
        DPIAware = if display scaling is activated, GUI controls will be scaled if possible (only with -noConsole)
+winFormsDPIAware = if display scaling is activated, WinForms use DPI scaling (requires Windows 10 and .Net 4.7 or up)
+                  not applicable with -ps7
    requireAdmin = if UAC is enabled, compiled executable run only in elevated context (UAC dialog appears if required)
       supportOS = use functions of newest Windows versions (execute [Environment]::OSVersion to see the difference)
      virtualize = application virtualization is activated (forcing x86 runtime)
@@ -97,8 +121,34 @@ UNICODEEncoding = encode output as UNICODE in console mode
                  PowerShell 7+ must be installed on the target machine.
                  In console mode pwsh.exe inherits the console for interactive input/output.
                  In GUI mode (-noConsole) output is captured and shown in message boxes.
-                 Not applicable together with -conHost, -credentialGUI and -UNICODEEncoding
-                 (those parameters are ignored with a warning).
+                 Not applicable together with -conHost, -credentialGUI, -UNICODEEncoding,
+                 -noOutput, -noError, -exitOnCancel, -configFile, -winFormsDPIAware and
+                 -STA/-MTA (those parameters are ignored with a warning).
+removeAllComments = strip all # line comments, <# #> block comments and #region/#endregion
+                 markers from the input script before embedding (here-string bodies are
+                 kept verbatim, #requires directives are preserved).
+                 Note: with this switch a script extracted via -extract:<FILENAME> will
+                 NOT match the original input file (comments are gone), and comment-based
+                 help blocks are stripped as well (-? of the compiled executable shows
+                 no help text then).
+     mergeIncludes = inline every dot-sourced, call-operator (&) or Import-Module file
+                 reference (recursively) into one self-contained script before embedding.
+                 Include paths are resolved relative to the including file first, then to
+                 the folder of the input file, then to the project root (folder containing
+                 the "source" sub-folder). A .psd1 manifest is redirected to its sibling
+                 .psm1/.ps1 module file. Param blocks of included files are converted to
+                 explicit parameter assignments at every inclusion point, all #requires
+                 lines are merged into one consolidated header, "using namespace" lines
+                 of included files are hoisted into it while other using forms and
+                 Export-ModuleMember calls are dropped with a warning. Implies
+                 removeAllComments. Merge failures are reported via Write-Error and abort
+                 compilation. Note: $PSScriptRoot, $PSCommandPath and $ScriptRoot inside
+                 included code resolve to the executable location after merging.
+savePreprocessedScript = save the preprocessed script (result of -removeAllComments or
+                 -mergeIncludes) as a .ps1 file next to the output executable (UTF-8 with
+                 BOM), before the PS2EXE path variable marker is injected, so it remains
+                 a valid standalone PowerShell script. Ignored with a warning when
+                 neither -removeAllComments nor -mergeIncludes is specified.
 ```
 
 A generated executable has the following reserved parameters:
@@ -125,11 +175,11 @@ PS2EXE can be used with Powershell Core. To do so just install the module PS2EXE
 **With `-ps7`** PS2EXE generates a lightweight .NET Framework stub executable that:
 1. Locates `pwsh.exe` (PowerShell 7+) via registry or well-known paths.
 2. Extracts the embedded script to a temporary wrapper `.ps1` file that sets `$ScriptRoot`, `$PSScriptRoot`, `$PSCommandPath` and the culture.
-3. Launches `pwsh.exe -NoProfile -NoLogo -ExecutionPolicy Bypass -File <temp_script> <args>`.
+3. Launches `pwsh.exe -NoProfile -NoLogo -File <temp_script> <args>` (the execution policy is passed via the `PSExecutionPolicyPreference` environment variable).
 4. In console mode inherits the console for interactive input/output; in GUI mode (`-noConsole`) captures output and shows it in message boxes.
 5. Cleans up the temporary file and returns the exit code of `pwsh.exe`.
 
-PowerShell 7+ must be installed on the target machine. `-conHost`, `-credentialGUI` and `-UNICODEEncoding` are not applicable with `-ps7` and are ignored with a warning.
+PowerShell 7+ must be installed on the target machine. `-conHost`, `-credentialGUI`, `-UNICODEEncoding`, `-noOutput`, `-noError`, `-exitOnCancel`, `-configFile`, `-winFormsDPIAware` and `-STA`/`-MTA` are not applicable with `-ps7` and are ignored with a warning.
 
 ### Embedding files in compiled executables:
 With the parameter *-embedFiles* followed by a hash table with paths to files those files will be embedded in the compiled executable.
@@ -157,10 +207,17 @@ Output.exe -extract:C:\Output.ps1
 ```
 will decompile the script stored in Output.exe. And notice: the script (intentionally) is stored in clear text in the executable!
 
+When `-removeAllComments` or `-mergeIncludes` was used at compile time, the extracted script will NOT match the original input file: comments are stripped and included files are inlined.
+
+### Output file timestamps:
+The generated executable (and the preprocessed script saved with -savePreprocessedScript) inherits the creation and modification times of the input script. With -mergeIncludes the newest creation and modification times among all processed files (input script and includes) are used. If setting the times fails (e.g. locked file or restricted file system), a warning is emitted and the compilation result is unaffected.
+
 ### Script variables:
 Since PS2EXE converts a script to an executable, script related variables are not available anymore. The variable $MyInvocation is set to other values than in a script.
 
-Since v0.5.1.0 the variables $ScriptRoot, $PSScriptRoot and $PSCommandPath are set by PS2EXE in both PS 5.1 and PS7 modes and point to the location of the executable (in PS7 mode they are set in the wrapper script before user code runs).
+Since v1.0.18 the variables $ScriptRoot, $PSScriptRoot and $PSCommandPath are set by PS2EXE in both PS 5.1 and PS7 modes and point to the location of the executable (in PS7 mode they are set in the wrapper script before user code runs; in PS 5.1 mode they are preset before the script runs, so they are visible in param block default values as well).
+
+When -mergeIncludes was used, $PSScriptRoot, $PSCommandPath and $ScriptRoot inside included code (including param block default values) resolve to the location of the compiled executable, not to the original folders of the included files.
 
 You can get $PSScriptRoot independently of compiled/not compiled with the following code line:
 
@@ -184,6 +241,15 @@ $Host.UI.RawUI.FlushInputBuffer()
 ```
 
 ## Changes:
+### 1.0.20 / 2026-10-08
+- new parameter -removeAllComments: strips all # line comments, <# #> block comments and #region/#endregion markers from the input script before embedding (here-string bodies kept verbatim, #requires directives preserved); scripts extracted with -extract will not match the original input file when preprocessing is active; comment-based help blocks are stripped as well, so -? of the compiled executable shows no help text with preprocessing active
+- new parameter -mergeIncludes: recursively inlines every dot-sourced, call-operator (&) or Import-Module file reference into one self-contained script before embedding; include paths are resolved relative to the including file first, then to the folder of the input file, then to the project root (nearest parent folder containing a "source" sub-folder); a .psd1 manifest is redirected to its sibling .psm1/.ps1 module file; param blocks of included files are converted to explicit parameter assignments at every inclusion point (switch parameters never bind positional arguments), all #requires lines are merged into one consolidated header, "using namespace" lines of included files are hoisted into it while other using forms and Export-ModuleMember calls are dropped with a warning; implies -removeAllComments; merge failures are reported via Write-Error and abort compilation; note that $PSScriptRoot, $PSCommandPath and $ScriptRoot inside included code (including param block defaults) resolve to the executable location after merging
+- new parameter -savePreprocessedScript: saves the preprocessed script (result of -removeAllComments or -mergeIncludes) as a .ps1 file next to the output executable before the PS2EXE path variable marker is injected, so it remains a valid standalone script; ignored with a warning when no preprocessing switch is set
+- output file timestamps: the generated executable and the saved preprocessed script inherit the creation and modification times of the source script; with -mergeIncludes the newest times among all processed files (source and includes) are used
+- version numbers unified: the compiler banner and the generated host now report the module version 1.0.20 instead of the legacy PS2EXE-GUI v0.5.1.x numbering
+- new script based graphical front end Win-PS2EXE.ps1 (WinForms, PowerShell 5.1+, no dependencies) replaces the legacy compiled Win-PS2EXE.exe; new exported function Show-WinPS2EXE; GUI settings persisted in %APPDATA%\ps2exe; command line preview window; background compilation with errors/warnings report window with selectable, copyable text; hover tooltips with parameter descriptions taken from the documentation; parameters not applicable with -ps7 are dimmed automatically (also after restoring persisted settings)
+- bugfixes: switch parameters of included files no longer consume positional arguments when merging; quoted include paths now honor the .psd1 redirect to the sibling module file; -removeAllComments reads ANSI-encoded input files without corrupting non-ASCII text; the GUI no longer crashes on invalid path text under PowerShell 5.1 and validates the destination path before compiling
+
 ### 1.0.19 / 2026-10-06
 - bugfixes, more av friendly output
 

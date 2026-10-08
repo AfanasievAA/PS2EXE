@@ -1,4 +1,4 @@
-﻿#Requires -Version 3.0
+﻿#Requires -Version 5.1
 
 <#
 .SYNOPSIS
@@ -10,6 +10,10 @@ Win-PS2EXE for convenience.
 
 Use -ps7 to generate an executable that runs the script via pwsh.exe (PowerShell 7+).
 PowerShell 7+ must be installed on the target machine when using -ps7.
+
+The generated executable (and the preprocessed script saved with -savePreprocessedScript)
+inherits the creation and modification times of the input script; with -mergeIncludes the
+newest times among all merged files are used.
 
 In -ps7 mode the generated executable is a lightweight .NET Framework stub that locates pwsh.exe
 and executes the embedded script in a wrapper that sets $ScriptRoot, $PSScriptRoot and $PSCommandPath
@@ -113,6 +117,31 @@ In console mode: pwsh.exe inherits the console for interactive input/output.
 In GUI mode (-noConsole): output is captured and shown in message boxes.
 Note: -conHost, -credentialGUI, -UNICODEEncoding, -noOutput, -noError, -exitOnCancel,
 -configFile, -winFormsDPIAware and -STA/-MTA are not applicable with -ps7 and are ignored.
+.PARAMETER removeAllComments
+strip all comments (# line, < # # > block, #region/#endregion) from the input script before
+embedding, here-string bodies are kept verbatim, # requires directives are preserved.
+Note: with this switch the script extracted via -extract:<FILENAME> will NOT match the
+original input file (comments are gone).
+.PARAMETER mergeIncludes
+inline every dot-sourced, call-operator (&) or Import-Module file reference (recursively)
+into one self-contained script before embedding. Include paths are resolved relative to
+the including file first, then to the folder of the input file, then to the project root
+(the nearest parent folder that contains a "source" subfolder). Param blocks of included
+files are converted to explicit parameter assignments at every inclusion point. Implies
+removeAllComments (comment stripping runs inside the merge). A .psd1 manifest is
+redirected to its sibling .psm1/.ps1 file. "using namespace" lines of included files are
+hoisted into a consolidated header, other "using" forms and Export-ModuleMember calls are
+dropped with a warning. Circular includes abort with an error.
+Note: in the merged single script $PSScriptRoot, $PSCommandPath and $ScriptRoot inside
+included code (including param block default values) resolve to the location of the
+compiled executable, not to the original folder of the included file.
+.PARAMETER savePreprocessedScript
+save the preprocessed script (the result of -removeAllComments or -mergeIncludes) as a
+.ps1 file next to the output executable (same base name as the executable, UTF-8 with
+BOM). The file is written before the PS2EXE path variable marker is injected, so it
+remains a valid standalone PowerShell script and inherits the file times of the source
+script (with -mergeIncludes the newest times among all merged files). Ignored with a
+warning when neither -removeAllComments nor -mergeIncludes is specified.
 .EXAMPLE
 Invoke-ps2exe C:\Data\MyScript.ps1
 Compiles C:\Data\MyScript.ps1 to C:\Data\MyScript.exe as console executable
@@ -123,14 +152,42 @@ Compiles C:\Data\MyScript.ps1 to C:\Data\MyScript7.exe as graphical executable t
 Win-PS2EXE
 Start graphical front end to Invoke-ps2exe
 .NOTES
-Version: 0.5.1.2
-Date: 2026.10.06
+Version: 1.0.20
+Date: 2026.10.08
 Author: Andrew Afanasiev
 Original Authors: Ingo Karstein, Markus Scholtes
 .LINK
 Original file at https://github.com/MScholtes/PS2EXE
 .CHANGELOG 
 ============================================
+[NEW]   Output file timestamps: the generated executable and the saved
+        preprocessed script inherit the creation and modification times of
+        the source script; with -mergeIncludes the newest creation and
+        modification times among all processed files (source and includes)
+        are used.
+[NEW]   Added -savePreprocessedScript switch: saves the preprocessed script
+        (result of -removeAllComments or -mergeIncludes) as a .ps1 file next
+        to the output executable, before the PS2EXE path variable marker is
+        injected (so the file stays a valid standalone PowerShell script).
+        Ignored with a warning when no preprocessing switch is set.
+[CHG]   Version numbering unified with the module version: the compiler
+        banner and the generated host now report 1.0.20 instead of the
+        legacy PS2EXE-GUI v0.5.1.x numbering.
+[NEW]   Added -removeAllComments switch: strips all # line comments,
+        < # # > block comments and #region/#endregion markers from the
+        input script before embedding (here-string bodies are kept
+        verbatim, #requires directives are preserved). Note: a script
+        extracted with -extract:<FILENAME> will not match the original
+        input file when preprocessing is active.
+        [NEW] Added -mergeIncludes switch: recursively inlines every
+        dot-sourced, call-operator (&) or Import-Module file reference
+        into one self-contained script before embedding. Include paths
+        are resolved relative to the including file first, then to the
+        folder of the input file. Param blocks of included files are
+        converted to explicit parameter assignments at every inclusion
+        point, all #requires lines are merged into one consolidated
+        header. Implies -removeAllComments. Merge failures are
+        reported via Write-Error and abort compilation.
 [CHG]   PS7 mode: the execution policy is passed to pwsh.exe via the
         documented PSExecutionPolicyPreference environment variable
         instead of a literal "-ExecutionPolicy Bypass" command line
@@ -193,14 +250,12 @@ function Invoke-ps2exe
         [STRING]$iconFile = $NULL, $embedFiles = @{}, [STRING]$title, [STRING]$description, [STRING]$company, [STRING]$product, [STRING]$copyright, [STRING]$trademark,
         [STRING]$version, [SWITCH]$configFile, [SWITCH]$noConfigFile, [SWITCH]$noOutput, [SWITCH]$noError, [SWITCH]$noVisualStyles, [SWITCH]$exitOnCancel,
         [SWITCH]$DPIAware, [SWITCH]$winFormsDPIAware, [SWITCH]$requireAdmin, [SWITCH]$supportOS, [SWITCH]$virtualize, [SWITCH]$longPaths,
-        [SWITCH]$ps7)
+        [SWITCH]$ps7, [SWITCH]$removeAllComments, [SWITCH]$mergeIncludes, [SWITCH]$savePreprocessedScript)
 
 <################################################################################>
 <##                                                                            ##>
-<##      PS2EXE-GUI v0.5.1.2                                                  ##>
-<##      Written by: Ingo Karstein (http://blog.karstein-consulting.com)       ##>
-<##      Reworked and GUI support by Markus Scholtes                           ##>
-<##      PowerShell 7+ support (-ps7) added by Andrew Afanasiev				   ##>
+<##      PS2EXE-GUI v1.0.20                                                    ##>
+<##      Rewritten by:  Andrew Afanasiev				                       ##>
 <##                                                                            ##>
 <##      This script is released under Microsoft Public Licence                ##>
 <##          that can be downloaded here:                                      ##>
@@ -210,7 +265,7 @@ function Invoke-ps2exe
 
     if (!$nested)
     {
-        Write-Output "PS2EXE-GUI v0.5.1.2 by Ingo Karstein, reworked and GUI support by Markus Scholtes, PowerShell 7+ support (-ps7) added by Andrew Afanasiev`n"
+        Write-Output "PS2EXE-GUI v1.0.20 by Ingo Karstein, reworked and GUI support by Markus Scholtes, PowerShell 7+ support (-ps7) and script preprocessing added by Andrew Afanasiev`n"
     }
     else
     {
@@ -279,7 +334,7 @@ function Invoke-ps2exe
         Write-Output "              [-company '<company>'] [-product '<product>'] [-copyright '<copyright>'] [-trademark '<trademark>']"
         Write-Output "              [-version '<version>'] [-configFile] [-noOutput] [-noError] [-noVisualStyles] [-exitOnCancel]"
         Write-Output "              [-DPIAware] [-winFormsDPIAware] [-requireAdmin] [-supportOS] [-virtualize] [-longPaths]"
-        Write-Output "              [-ps7]`n"
+        Write-Output "              [-ps7] [-removeAllComments] [-mergeIncludes] [-savePreprocessedScript]`n"
         Write-Output "       inputFile = Powershell script that you want to convert to executable (file has to be UTF8 or UTF16 encoded)"
         Write-Output "      outputFile = destination executable file name or folder, defaults to inputFile with extension '.exe'"
         Write-Output "    prepareDebug = create helpful information for debugging"
@@ -313,7 +368,11 @@ function Invoke-ps2exe
         Write-Output "      virtualize = application virtualization is activated (forcing x86 runtime)"
         Write-Output "       longPaths = enable long paths ( > 260 characters) if enabled on OS (works only with Windows 10 or up)"
         Write-Output "            ps7 = generate executable that runs script via pwsh.exe (PowerShell 7+)"
-        Write-Output "                 = PowerShell 7+ must be installed on target machine`n"
+        Write-Output "                 = PowerShell 7+ must be installed on target machine"
+        Write-Output "removeAllComments = strip all comments from the input script before embedding (here-string bodies kept verbatim)"
+        Write-Output "     mergeIncludes = inline all dot-sourced/call-operator/Import-Module files into one self-contained script"
+        Write-Output "                    = implies -removeAllComments, param blocks of includes become parameter assignments"
+        Write-Output "savePreprocessedScript = save the preprocessed script next to the output executable (requires -removeAllComments or -mergeIncludes)`n"
         Write-Output "Input file not specified!"
         return
     }
@@ -440,6 +499,11 @@ function Invoke-ps2exe
     {
         Write-Error "-longPaths cannot be combined with -virtualize"
         return
+    }
+    if ($savePreprocessedScript -and !$mergeIncludes -and !$removeAllComments)
+    {
+        Write-Warning "-savePreprocessedScript requires -mergeIncludes or -removeAllComments, ignoring -savePreprocessedScript."
+        $savePreprocessedScript = $FALSE
     }
 
     $CFGFILE = $FALSE
@@ -612,7 +676,6 @@ function Invoke-ps2exe
     }
 
     Write-Output "Reading input file $inputFile"
-
     # Read the script and inject a marker comment after any leading using
     # statements and param block (statements before them would be a parse
     # error). At runtime the marker is replaced by assignments for $ScriptRoot,
@@ -620,6 +683,618 @@ function Invoke-ps2exe
     $reader = New-Object System.IO.StreamReader($inputFile, $TRUE)
     $scriptContent = $reader.ReadToEnd()
     $reader.Close()
+
+    # ==================================================================
+    # Preprocessing: merge includes (-mergeIncludes) and/or strip
+    # comments (-removeAllComments). Runs on the raw script text BEFORE
+    # the path-variable marker is injected, so the AST parse below and
+    # the embedded resource both see the final content.
+    # ==================================================================
+    if ($mergeIncludes -or $removeAllComments)
+    {
+        # Unique placeholder that temporarily replaces the param block of an
+        # included file; substituted with explicit parameter assignments at
+        # every inclusion point (see Convert-ParamBlockToAssignments)
+        $paramBlockMarker = '@@MERGE_PARAMBLOCK@@'
+
+        # Read a file with BOM detection (UTF-16 LE/BE, UTF-8, ANSI fallback)
+        # so non-ASCII text is not corrupted
+        function Get-FileContentRaw {
+            param ( [string] $FilePath )
+            $bytes = [System.IO.File]::ReadAllBytes($FilePath)
+            if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) {
+                return [System.Text.Encoding]::Unicode.GetString($bytes, 2, $bytes.Length - 2)
+            }
+            if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF) {
+                return [System.Text.Encoding]::BigEndianUnicode.GetString($bytes, 2, $bytes.Length - 2)
+            }
+            # Strict UTF-8 first: catches BOM-less UTF-8; invalid sequences => ANSI
+            $text = try {
+                [System.Text.UTF8Encoding]::new($false, $true).GetString($bytes)
+            }
+            catch {
+                [System.Text.Encoding]::Default.GetString($bytes)
+            }
+            if ($text.Length -gt 0 -and $text[0] -eq [char]0xFEFF) {
+                $text = $text.Substring(1)
+            }
+            return $text
+        }
+
+        # Single stateful pass over the content:
+        #   * here-string bodies (@" ... "@ / @' ... '@) are kept VERBATIM, so
+        #     embedded configs/code containing '#' lines are not lost;
+        #   * block comments <# ... #> (multi-line and inline) and full-line
+        #     '#' comments outside here-strings are removed;
+        #   * #Requires directives are preserved;
+        #   * result is joined back with CRLF.
+        # Note: line-based heuristic, not a full tokenizer; a normal string
+        # ending in @" can be misdetected as an opener, which only causes
+        # over-preservation (never data loss).
+        function Remove-AllComments {
+            param ( [string] $Content )
+            $lines = $Content -split "`r?`n"
+            $inHereString = $false
+            $hereCloser = $null
+            $inBlock = $false
+            $filteredLines = foreach ($line in $lines) {
+                if ($inHereString) {
+                    if ($line -eq $hereCloser) { $inHereString = $false }
+                    $line
+                }
+                elseif ($inBlock) {
+                    if ($line -match '#>') {
+                        $inBlock = $false
+                        $tail = $line -replace '.*?#>', ''
+                        if ($tail -match '<#') { $inBlock = $true; $tail = ($tail -split '<#', 2)[0] }
+                        if ($tail.Trim().Length -gt 0) { $tail }
+                    }
+                }
+                elseif ($line -match '@(?<q>["''])\s*$') {
+                    $hereCloser = if ($Matches['q'] -eq '"') { '"@' } else { "'@" }
+                    $inHereString = $true
+                    $line
+                }
+                elseif ($line -match '^\s*#Requires\b') { $line }
+                elseif ($line -notmatch '^\s*#') {
+                    # code line: strip paired inline block comments, then handle
+                    # a block comment opened at the end of this line
+                    $clean = [regex]::Replace($line, '(?s)<#.*?#>', '')
+                    if ($clean -match '<#') { $inBlock = $true; $clean = ($clean -split '<#', 2)[0] }
+                    # Strip a trailing '# ...' comment, but only when safe:
+                    # '#' must sit outside any string literal and be preceded by
+                    # whitespace. Anything ambiguous (unbalanced quotes, '#' glued
+                    # to code, backtick escapes we cannot trust) keeps the line as-is.
+                    if (-not $inBlock) {
+                        $inS = $false; $inD = $false
+                        for ($i = 0; $i -lt $clean.Length; $i++) {
+                            $ch = $clean[$i]
+                            if ($ch -eq '`' -and $inD) { $i++; continue }
+                            if ($ch -eq '"' -and -not $inS) { $inD = -not $inD; continue }
+                            if ($ch -eq "'" -and -not $inD) { $inS = -not $inS; continue }
+                            if (-not $inS -and -not $inD -and $ch -eq '#' -and $i -gt 0 -and
+                                ($clean[$i - 1] -eq ' ' -or $clean[$i - 1] -eq "`t")) {
+                                $clean = $clean.Substring(0, $i).TrimEnd()
+                                break
+                            }
+                        }
+                    }
+                    if ($clean.Trim().Length -gt 0) { $clean }
+                }
+            }
+            return [string]::Join("`r`n", $filteredLines)
+        }
+
+        # Takes a possibly-relative path and resolves it against a base folder
+        # (folder of the including file, or the input file's folder as fallback).
+        # Returns a validated absolute path (or throws if the file does not exist).
+        function Resolve-RelativePath {
+            [CmdletBinding()]
+            param (
+                [Parameter(Mandatory = $true, Position = 0)]
+                [string] $Path,
+                [string] $BaseDir
+            )
+            # Strip quotes if present, then check if it's an absolute path
+            $Path = $Path.Trim('"').Trim("'")
+            if ([System.IO.Path]::IsPathRooted($Path)) {
+                $candidate = $Path
+            }
+            else {
+                # Relative: combine with the supplied base folder
+                $candidate = Join-Path -Path $BaseDir -ChildPath $Path
+            }
+            # Resolve-Path normalises "./", "..", etc. and guarantees existence
+            try {
+                $resolved = (Resolve-Path -LiteralPath $candidate -ErrorAction Stop).Path
+            }
+            catch {
+                throw "Unable to resolve include path '$Path' (combined as '$candidate'). $($_.Exception.Message)"
+            }
+            # Ensure we really got a PowerShell script or module
+            if ([System.IO.Path]::GetExtension($resolved).ToLower() -notin '.ps1', '.psm1', '.psd1') {
+                throw "Resolved include is not a .ps1/.psm1/.psd1 file: $resolved"
+            }
+            return $resolved
+        }
+
+        # Builds explicit '$Param = <value>' assignment lines from the param
+        # block metadata of an included file and the arguments of a dot-source
+        # call. Dot-sourcing with arguments is semantically equal to assigning
+        # each argument to the corresponding parameter variable in the calling
+        # scope, so:
+        #   * named argument  -Name <expr>  -> $Name = <expr>
+        #   * switch argument -Name         -> $Name = $true
+        #   * positional arguments bind to parameters in declaration order
+        #   * parameters without an argument fall back to their declared
+        #     default expression ($false for switches, $null when no default)
+        # Named arguments may use the unique-prefix form PowerShell supports
+        # (-SkipDep for -SkipDependencyInstall).
+        function Convert-ParamBlockToAssignments {
+            param (
+                [System.Collections.Generic.List[hashtable]] $Parameters,
+                [object[]] $Arguments = @(),
+                [string] $CallContext = ''
+            )
+            $elements = @($Arguments)
+            $bound    = @{}
+            $consumed = New-Object System.Collections.Generic.HashSet[int]
+
+            # Pass 1: named arguments (-Name <expr> / -Name)
+            for ($i = 0; $i -lt $elements.Count; $i++) {
+                $el = $elements[$i]
+                if ($el -isnot [System.Management.Automation.Language.CommandParameterAst]) { continue }
+                $pname  = $el.ParameterName
+                $target = $Parameters | Where-Object { $_.Name -ieq $pname }
+                if (-not $target) {
+                    $prefixMatches = @($Parameters | Where-Object { $_.Name -like "$pname*" })
+                    if ($prefixMatches.Count -eq 1) { $target = $prefixMatches[0] }
+                }
+                if (-not $target) {
+                    Write-Warning "Unknown parameter '-$pname' in dot-source call ($CallContext): argument ignored."
+                    continue
+                }
+                if ($el.Argument) {
+                    $bound[$target.Name] = $el.Argument.Extent.Text
+                }
+                elseif ($target.IsSwitch) {
+                    $bound[$target.Name] = '$true'
+                }
+                else {
+                    # -Name without an attached value: the next positional element becomes its value
+                    $val = $null
+                    for ($j = $i + 1; $j -lt $elements.Count; $j++) {
+                        if ($consumed.Contains($j)) { continue }
+                        if ($elements[$j] -is [System.Management.Automation.Language.CommandParameterAst]) { break }
+                        $val = $elements[$j].Extent.Text
+                        [void]$consumed.Add($j)
+                        break
+                    }
+                    if ($null -ne $val) { $bound[$target.Name] = $val }
+                    else { Write-Warning "Parameter '-$pname' has no value in dot-source call ($CallContext): its default will be used." }
+                }
+            }
+
+            # Pass 2: positional arguments bind to parameters in declaration order
+            # (switch parameters are skipped, they can never bind a positional argument)
+            $posIdx = 0
+            foreach ($p in $Parameters) {
+                if ($bound.ContainsKey($p.Name)) { continue }
+                if ($p.IsSwitch) { continue }
+                while ($posIdx -lt $elements.Count -and ($consumed.Contains($posIdx) -or $elements[$posIdx] -is [System.Management.Automation.Language.CommandParameterAst])) { $posIdx++ }
+                if ($posIdx -ge $elements.Count) { break }
+                $bound[$p.Name] = $elements[$posIdx].Extent.Text
+                [void]$consumed.Add($posIdx)
+                $posIdx++
+            }
+
+            # Warn about leftover positional arguments that could not be bound
+            for ($k = 0; $k -lt $elements.Count; $k++) {
+                if (-not $consumed.Contains($k) -and $elements[$k] -isnot [System.Management.Automation.Language.CommandParameterAst]) {
+                    Write-Warning "Unbound argument '$($elements[$k].Extent.Text)' in dot-source call ($CallContext): ignored."
+                }
+            }
+
+            # Mandatory parameters without a value would normally prompt at runtime;
+            # in the merged code they silently get the default/null instead
+            foreach ($p in $Parameters) {
+                if (-not $bound.ContainsKey($p.Name) -and $p.IsMandatory) {
+                    Write-Warning "Mandatory parameter '$($p.Name)' is not supplied in dot-source call ($CallContext): the merged code will not prompt and will use the declared default (or null)."
+                }
+            }
+
+            # Emit one assignment per parameter: bound value, else declared default,
+            # else $false (switch) / $null
+            $lines = New-Object System.Collections.Generic.List[string]
+            foreach ($p in $Parameters) {
+                if ($bound.ContainsKey($p.Name)) {
+                    $value = $bound[$p.Name]
+                }
+                elseif ($p.HasDefault) {
+                    $value = $p.DefaultText
+                }
+                elseif ($p.IsSwitch) {
+                    $value = '$false'
+                }
+                else {
+                    $value = '$null'
+                }
+                $lines.Add(('$' + $p.Name + ' = ' + $value))
+            }
+            return $lines
+        }
+
+        # Walks up from a starting path until it finds a folder that has a child
+        # folder called "source". That folder is returned as the project root:
+        # relative include paths like ".\source\inc\x.ps1" are written against it.
+        function Get-ProjectRoot {
+            param (
+                [Parameter(Mandatory = $true)]
+                [string] $StartPath
+            )
+            $currentPath = (Split-Path -Parent $StartPath)
+            while (-not [string]::IsNullOrEmpty($currentPath)) {
+                if (Test-Path -LiteralPath (Join-Path $currentPath 'source') -PathType Container) {
+                    return $currentPath
+                }
+                $currentPath = Split-Path -Parent $currentPath
+            }
+            # no "source" folder found: fall back to the input file's own folder
+            return (Split-Path -Parent $StartPath)
+        }
+
+        # Recursively expands every dot-source / call-operator / Import-Module line.
+        # Comment stripping already happened on every loaded file (here-string
+        # bodies are preserved verbatim). The root file keeps its own param block
+        # (the ps2exe path-variable marker is injected after it later).
+        function Expand-Includes {
+            param (
+                [string] $FilePath,                # absolute path of the file to process
+                [string] $RootFolder,              # last-resort base folder for relative includes (project root)
+                [string] $InputFolder = '',        # folder of the input file (second fallback)
+                [hashtable] $Cache = @{},          # already-expanded files (for speed)
+                [hashtable] $InProgress = @{},     # files currently being expanded (circular-include guard)
+                [hashtable] $Requirements = $null, # accumulator for #requires of all merged files
+                [hashtable] $ParamInfo = @{},      # per-file param block metadata (name, default, switch)
+                [switch] $IsRoot                   # top-level source file keeps its own param block
+            )
+
+            if ($Cache.ContainsKey($FilePath)) {
+                return $Cache[$FilePath]
+            }
+            if ($InProgress.ContainsKey($FilePath)) {
+                throw "Circular include detected: '$FilePath' is included from within its own expansion chain."
+            }
+            $InProgress[$FilePath] = $true
+
+            # Load the file *as-is* and strip comments (here-string bodies are kept verbatim)
+            $rawContent = Get-FileContentRaw -FilePath $FilePath
+            $contentNoComments = Remove-AllComments -Content $rawContent
+
+            if ($null -eq $Requirements) {
+                $Requirements = @{ Version = $null; Others = [System.Collections.Generic.HashSet[string]]::new(); Usings = [System.Collections.Generic.HashSet[string]]::new() }
+            }
+
+            # Included files only: replace the script-level attribute lines
+            # ([CmdletBinding()], ...) and the param(...) block with a marker.
+            if (-not $IsRoot) {
+                $tokens = $null; $parseErrors = $null
+                $ast = [System.Management.Automation.Language.Parser]::ParseInput($contentNoComments, [ref]$tokens, [ref]$parseErrors)
+                if ($null -ne $ast.ParamBlock) {
+                    $paramList = New-Object System.Collections.Generic.List[hashtable]
+                    foreach ($p in $ast.ParamBlock.Parameters) {
+                        $isSwitch = [bool]($p.Attributes | Where-Object {
+                            $_ -is [System.Management.Automation.Language.TypeConstraintAst] -and
+                            $_.TypeName.Name -imatch '^(switch|SwitchParameter)$'
+                        })
+                        $isMandatory = [bool]($p.Attributes | Where-Object {
+                            $_ -is [System.Management.Automation.Language.AttributeAst] -and $_.TypeName.Name -ieq 'Parameter' -and
+                            ($_.NamedArguments | Where-Object { $_.ArgumentName -ieq 'Mandatory' -and (-not $_.Argument -or $_.Argument.Value -ne $false) })
+                        })
+                        $paramList.Add(@{
+                            Name        = $p.Name.VariablePath.UserPath
+                            HasDefault  = ($null -ne $p.DefaultValue)
+                            DefaultText = if ($null -ne $p.DefaultValue) { $p.DefaultValue.Extent.Text } else { $null }
+                            IsSwitch    = $isSwitch
+                            IsMandatory = $isMandatory
+                        })
+                    }
+                    $ParamInfo[$FilePath] = $paramList
+
+                    $removeStart = $ast.ParamBlock.Extent.StartOffset
+                    foreach ($attr in $ast.ParamBlock.Attributes) {
+                        if ($attr.Extent.StartOffset -lt $removeStart) { $removeStart = $attr.Extent.StartOffset }
+                    }
+                    $removeEnd = $ast.ParamBlock.Extent.EndOffset
+                    $contentNoComments = $contentNoComments.Substring(0, $removeStart) + "`r`n" + $paramBlockMarker + "`r`n" + $contentNoComments.Substring($removeEnd)
+                }
+            }
+
+            $lines = $contentNoComments -split "`r?`n"
+
+            # Include forms: dot-source (.), call operator (&), Import-Module/ipmo
+            $pathGroup       = '["'']?((?:"[^"]*"|''[^'']*''|[^\s"'''']+\.(?:ps1|psm1|psd1)))'
+            $dotSourcePattern = '^\s*\.\s+' + $pathGroup
+            $callPattern      = '^\s*&\s+' + $pathGroup
+            $importPattern    = '^\s*(?i:(Import-Module|ipmo))\s+' + $pathGroup
+
+            $outputLines = New-Object System.Collections.Generic.List[string]
+
+            $inHereString = $false
+            $hereCloser = $null
+
+            foreach ($ln in $lines) {
+                if ($inHereString) {
+                    if ($ln -eq $hereCloser) { $inHereString = $false }
+                    $outputLines.Add($ln)
+                    continue
+                }
+                if ($ln -match '@(?<q>["''])\s*$') {
+                    $hereCloser = if ($Matches['q'] -eq '"') { '"@' } else { "'@" }
+                    $inHereString = $true
+                    $outputLines.Add($ln)
+                    continue
+                }
+                # Strip a safe trailing '# ...' comment (same conservative scanner
+                # as in Remove-AllComments) so include-detection and argument
+                # parsing never see comment text; ambiguous lines are left intact.
+                $inS = $false; $inD = $false
+                for ($i = 0; $i -lt $ln.Length; $i++) {
+                    $ch = $ln[$i]
+                    if ($ch -eq '`' -and $inD) { $i++; continue }
+                    if ($ch -eq '"' -and -not $inS) { $inD = -not $inD; continue }
+                    if ($ch -eq "'" -and -not $inD) { $inS = -not $inS; continue }
+                    if (-not $inS -and -not $inD -and $ch -eq '#' -and $i -gt 0 -and
+                        ($ln[$i - 1] -eq ' ' -or $ln[$i - 1] -eq "`t")) {
+                        $ln = $ln.Substring(0, $i).TrimEnd()
+                        break
+                    }
+                }
+                # Collect #requires lines (outside here-strings); removed here and
+                # re-emitted as one consolidated header after the final merge pass.
+                if ($ln -match '^\s*#requires\s+(?<body>.+)$') {
+                    $reqBody = $Matches['body']
+                    if ($reqBody -match '^-Version\s+(?<ver>\S+)') {
+                        try {
+                            $v = [version]$Matches['ver']
+                            if ($null -eq $Requirements['Version'] -or $v -gt $Requirements['Version']) {
+                                $Requirements['Version'] = $v
+                            }
+                        }
+                        catch {
+                            [void]$Requirements['Others'].Add($ln.Trim())
+                        }
+                    }
+                    else {
+                        [void]$Requirements['Others'].Add($ln.Trim())
+                    }
+                    continue
+                }
+                # using statements are only valid at the top of a script: hoist
+                # 'using namespace' lines of included files into the consolidated
+                # header (inlined mid-script they break the parse), drop the other
+                # using forms with a warning
+                if (-not $IsRoot -and $ln -match '^\s*using\s+(?<kw>namespace|module|assembly)\b') {
+                    if ($Matches['kw'] -ieq 'namespace') {
+                        [void]$Requirements['Usings'].Add($ln.Trim())
+                    }
+                    else {
+                        Write-Warning "'using $($Matches['kw'])' in included file is dropped, it is not valid mid-script (in file $FilePath)."
+                    }
+                    continue
+                }
+                # Export-ModuleMember is only valid inside a module: in the merged
+                # single script it would be a runtime error, drop it (the functions
+                # of the inlined module end up in the caller scope anyway)
+                if ($ln -match '^\s*Export-ModuleMember\b') {
+                    Write-Warning "Export-ModuleMember dropped, it is only valid inside a module (in file $FilePath)."
+                    continue
+                }
+                $rawPath   = $null
+                $importKind = $null
+                if ($ln -match $dotSourcePattern) { $rawPath = $Matches[1]; $importKind = 'dot-source' }
+                elseif ($ln -match $callPattern) { $rawPath = $Matches[1]; $importKind = 'call-operator' }
+                elseif ($ln -match $importPattern) { $rawPath = $Matches[1]; $importKind = 'import-module' }
+                if ($null -ne $rawPath) {
+                    $argText = $ln.Substring($Matches[0].Length).Trim()
+                    $incDir = Split-Path -Parent $FilePath
+                    $rawPath = $rawPath.Replace('$PSScriptRoot', $incDir).Replace('${PSScriptRoot}', $incDir)
+                    # strip surrounding quotes: the .psd1 redirect below matches the
+                    # extension at the end of the raw path and builds its sibling
+                    # candidates from it, both fail while the quotes are attached
+                    $rawPath = $rawPath.Trim('"').Trim("'")
+                    # A .psd1 manifest contributes no code: redirect to the sibling .psm1/.ps1 module file
+                    if ($rawPath -imatch '\.psd1$') {
+                        foreach ($ext in '.psm1', '.ps1') {
+                            $candidate = $rawPath -replace '\.psd1$', $ext
+                            $candidateFull = if ([System.IO.Path]::IsPathRooted($candidate)) { $candidate } else { Join-Path -Path $incDir -ChildPath $candidate }
+                            if (Test-Path -LiteralPath $candidateFull -PathType Leaf) { $rawPath = $candidate; break }
+                        }
+                        if ($rawPath -imatch '\.psd1$') {
+                            Write-Warning "Manifest '$rawPath' has no sibling .psm1/.ps1 module file (in file $FilePath)."
+                            $outputLines.Add($ln)
+                            continue
+                        }
+                    }
+                    # Relative includes: try the including file's folder first, then
+                    # the input file's folder, then the project root
+                    $includePath = $null
+                    $resolveError = $null
+                    foreach ($baseDir in @($incDir, $InputFolder, $RootFolder)) {
+                        if ([string]::IsNullOrEmpty($baseDir)) { continue }
+                        try {
+                            $includePath = Resolve-RelativePath -Path $rawPath -BaseDir $baseDir
+                            break
+                        }
+                        catch {
+                            $resolveError = $_
+                        }
+                    }
+                    if ($null -eq $includePath) {
+                        Write-Warning "Include not found or invalid: $rawPath (in file $FilePath). $($resolveError.Exception.Message)"
+                        $outputLines.Add($ln)
+                        continue
+                    }
+
+                    $callArgs = @()
+                    $tail = ''
+                    if ($importKind -eq 'import-module' -and $argText.Length -gt 0) {
+                        # Import-Module flags (-Force, -Global, -PassThru, ...) do not map to script parameters: drop them
+                        Write-Warning "Import-Module arguments '$argText' are ignored (in file $FilePath)."
+                    }
+                    elseif ($argText.Length -gt 0) {
+                        $tokens = $null; $callErrors = $null
+                        # Accept any operator (. / &) and Import-Module commands alike
+                        $callAst = [System.Management.Automation.Language.Parser]::ParseInput($ln, [ref]$tokens, [ref]$callErrors)
+                        $callCmd = $callAst.Find({ param($node) $node -is [System.Management.Automation.Language.CommandAst] }, $false)
+                        if ($callErrors.Count -gt 0 -or $null -eq $callCmd -or $callCmd.CommandElements.Count -lt 2) {
+                            Write-Warning "Cannot parse include arguments (multiline calls are not supported) in file $FilePath, line: $ln"
+                            $outputLines.Add($ln)
+                            continue
+                        }
+                        $callArgs = @($callCmd.CommandElements | Select-Object -Skip 1)
+                        $tail = $ln.Substring($callCmd.Extent.EndOffset).Trim()
+                    }
+
+                    $includedContent = Expand-Includes -FilePath $includePath -RootFolder $RootFolder -InputFolder $InputFolder -Cache $Cache -InProgress $InProgress -Requirements $Requirements -ParamInfo $ParamInfo
+
+                    if ($ParamInfo.ContainsKey($includePath)) {
+                        $assignments = Convert-ParamBlockToAssignments -Parameters $ParamInfo[$includePath] -Arguments $callArgs -CallContext "in file $FilePath -> $includePath"
+                        $includedContent = $includedContent.Replace($paramBlockMarker, [string]::Join("`r`n", $assignments))
+                    }
+                    elseif ($callArgs.Count -gt 0) {
+                        Write-Warning "Arguments passed to '$includePath' which has no param block; arguments ignored (in file $FilePath)."
+                    }
+
+                    $outputLines.Add("#region Included ($importKind) from $rawPath")
+                    $outputLines.Add($includedContent)
+                    $outputLines.Add("#endregion")
+                    if ($tail) {
+                        Write-Warning "Trailing code after an include call is moved after the include; include calls inside it are NOT expanded (in file $FilePath, line: '$ln')"
+                        $outputLines.Add($tail)
+                    }
+                }
+                else {
+                    $outputLines.Add($ln)
+                }
+            }
+
+            $final = [string]::Join("`r`n", $outputLines)
+            $Cache[$FilePath] = $final
+            $InProgress.Remove($FilePath)
+            return $final
+        }
+
+        if ($mergeIncludes)
+        {
+            Write-Output "Merging includes..."
+            # project root (folder containing the "source" sub-folder): relative
+            # include paths like ".\source\inc\x.ps1" resolve against it
+            $rootFolder = Get-ProjectRoot -StartPath $inputFile
+            $inputFolder = Split-Path -Parent $inputFile
+            $scriptRequirements = @{ Version = $null; Others = [System.Collections.Generic.HashSet[string]]::new(); Usings = [System.Collections.Generic.HashSet[string]]::new() }
+            $paramInfo = @{}
+            # Fail fast like the rest of ps2exe: report via Write-Error and stop
+            # instead of letting a merge exception surface as an unhandled error
+            try
+            {
+                # the cache is created here instead of inside Expand-Includes so it
+                # survives the call: its keys are the complete list of processed
+                # files (root and includes) used for the output reference timestamps
+                $mergeCache = @{}
+                $scriptContent = Expand-Includes -FilePath $inputFile -RootFolder $rootFolder -InputFolder $inputFolder -Cache $mergeCache -Requirements $scriptRequirements -ParamInfo $paramInfo
+            }
+            catch
+            {
+                Write-Error "Merging includes failed: $($_.Exception.Message)"
+                return
+            }
+            # Final pass to strip the #region / #endregion markers that were
+            # added only for debugging the recursion
+            $scriptContent = Remove-AllComments -Content $scriptContent
+            # Safety net: every param-block marker must have been substituted with
+            # assignments by now; a leftover means an internal error.
+            if ($scriptContent.Contains($paramBlockMarker)) {
+                Write-Error "Internal error: unreplaced param-block marker left in the merged content."
+                return
+            }
+            # Prepend a single consolidated header: the highest required version among
+            # all merged files, unique non-version requirements, then the hoisted
+            # 'using namespace' lines (using statements must precede all other statements)
+            $requiresHeader = New-Object System.Collections.Generic.List[string]
+            if ($null -ne $scriptRequirements['Version']) {
+                $requiresHeader.Add('#requires -Version {0}' -f $scriptRequirements['Version'])
+            }
+            foreach ($other in $scriptRequirements['Others']) {
+                $requiresHeader.Add($other)
+            }
+            foreach ($u in $scriptRequirements['Usings']) {
+                $requiresHeader.Add($u)
+            }
+            if ($requiresHeader.Count -gt 0) {
+                $scriptContent = [string]::Join("`r`n", $requiresHeader) + "`r`n" + $scriptContent
+            }
+        }
+        else
+        {
+            Write-Output "Removing comments..."
+            # re-read with full encoding detection: the StreamReader above decodes
+            # lenient UTF-8 and would turn invalid sequences into U+FFFD instead
+            # of falling back to ANSI like the merge path does
+            $scriptContent = Remove-AllComments -Content (Get-FileContentRaw -FilePath $inputFile)
+        }
+    }
+
+    # --- Reference timestamps for the output files ---
+    # The saved preprocessed script and the executable inherit the file times of
+    # the source script; with -mergeIncludes the newest times among all
+    # processed files win (the merge cache holds every file that was actually
+    # loaded and merged, the input file included)
+    $refCreationTime = $null
+    $refLastWriteTime = $null
+    $refFiles = @($inputFile)
+    if ($mergeIncludes -and $null -ne $mergeCache -and $mergeCache.Count -gt 0) { $refFiles = @($mergeCache.Keys) }
+    foreach ($rf in $refFiles)
+    {
+        $rfi = Get-Item -LiteralPath $rf -ErrorAction SilentlyContinue
+        if ($rfi)
+        {
+            if ($null -eq $refCreationTime -or $rfi.CreationTime -gt $refCreationTime) { $refCreationTime = $rfi.CreationTime }
+            if ($null -eq $refLastWriteTime -or $rfi.LastWriteTime -gt $refLastWriteTime) { $refLastWriteTime = $rfi.LastWriteTime }
+        }
+    }
+
+    # Optional: save the preprocessed script next to the output executable for
+    # review or standalone re-use. Runs BEFORE the PS2EXE path variable marker
+    # is injected, so the saved file is a valid standalone PowerShell script.
+    if ($savePreprocessedScript)
+    {
+        $preprocessedFile = [System.IO.Path]::Combine([System.IO.Path]::GetDirectoryName($outputFile), [System.IO.Path]::GetFileNameWithoutExtension($outputFile)+".ps1")
+        if ([STRING]::Equals($preprocessedFile, $inputFile, [System.StringComparison]::OrdinalIgnoreCase))
+        { # saving would overwrite the input file: refuse instead of destroying the source
+            Write-Warning "Preprocessed script not saved: '$preprocessedFile' is identical to the input file."
+        }
+        else
+        {
+            [System.IO.File]::WriteAllText($preprocessedFile, $scriptContent, (New-Object System.Text.UTF8Encoding($TRUE)))
+            Write-Output "Preprocessed script saved to $preprocessedFile"
+            # inherit the reference timestamps determined above; failures
+            # (locked file, exotic file system) downgrade to a warning
+            if ($null -ne $refCreationTime -and $null -ne $refLastWriteTime)
+            {
+                try
+                {
+                    $preItem = Get-Item -LiteralPath $preprocessedFile
+                    $preItem.LastWriteTime = $refLastWriteTime
+                    $preItem.CreationTime = $refCreationTime
+                }
+                catch
+                {
+                    Write-Warning "Could not set file times on '$preprocessedFile': $($_.Exception.Message)"
+                }
+            }
+        }
+    }
 
     $tokens = $NULL
     $parseErrors = $NULL
@@ -3039,7 +3714,7 @@ namespace ModuleNameSpace
         {
             get
             {
-                return new Version(0, 5, 1, 1);
+                return new Version(1, 0, 20);
             }
         }
 
@@ -3138,12 +3813,14 @@ namespace ModuleNameSpace
                     $(if ($STA -or $MTA) {"myRunSpace.ApartmentState = System.Threading.ApartmentState."})$(if ($STA){"STA"})$(if ($MTA){"MTA"});
                     myRunSpace.Open();
 
-                    // Add $ScriptRoot pointing to the EXE directory
-                    myRunSpace.SessionStateProxy.SetVariable("ScriptRoot", System.AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\'));
-                    // Preset the path variables so they are already visible in param block default
-                    // values, the bootstrap injected after the param block runs too late for that
+                    // Add $ ScriptRoot pointing to the EXE directory and preset the path
+                    // variables so they are already visible in param block default values,
+                    // the bootstrap injected after the param block ran too late for that.
+                    // The length check keeps the backslash when the EXE sits in a drive
+                    // root ("C:\"), a plain TrimEnd would yield the drive-relative "C:"
                     string presetRoot = System.AppDomain.CurrentDomain.BaseDirectory;
                     if (presetRoot.Length > 3) presetRoot = presetRoot.TrimEnd('\\');
+                    myRunSpace.SessionStateProxy.SetVariable("ScriptRoot", presetRoot);
                     myRunSpace.SessionStateProxy.SetVariable("PSScriptRoot", presetRoot);
                     myRunSpace.SessionStateProxy.SetVariable("PSCommandPath", Assembly.GetExecutingAssembly().Location);
 
@@ -3423,6 +4100,23 @@ namespace ModuleNameSpace
         if (Test-Path -LiteralPath $outputFile)
         {
             Write-Output "Output file $outputFile written"
+
+            # inherit the reference timestamps (source file, or the newest of all
+            # merged files with -mergeIncludes); failures downgrade to a warning,
+            # the executable itself is unaffected
+            if ($null -ne $refCreationTime -and $null -ne $refLastWriteTime)
+            {
+                try
+                {
+                    $outItem = Get-Item -LiteralPath $outputFile
+                    $outItem.LastWriteTime = $refLastWriteTime
+                    $outItem.CreationTime = $refCreationTime
+                }
+                catch
+                {
+                    Write-Warning "Could not set file times on '$outputFile': $($_.Exception.Message)"
+                }
+            }
 
             if ($prepareDebug)
             {
