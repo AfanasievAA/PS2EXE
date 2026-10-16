@@ -12,7 +12,7 @@
 RootModule = 'ps2exe.psm1'
 
 # Version number of this module.
-ModuleVersion = '1.0.20'
+ModuleVersion = '1.0.21'
 
 # Supported PSEditions
 CompatiblePSEditions = @('Desktop', 'Core')
@@ -116,6 +116,8 @@ PrivateData = @{
 
 		# ReleaseNotes of this module
 		ReleaseNotes = @'
+# 1.0.21 / 2026-10-15
++ PS7 mode: the compile-time syntax check now parses the script with the PowerShell 7 parser by delegating to a local pwsh.exe, so the check matches the runtime that will execute the script. 
 # 1.0.20 / 2026-10-08
 - output file timestamps: the generated executable and the saved preprocessed script inherit the creation and modification times of the source script; with -mergeIncludes the newest times among all processed files (source and includes) are used
 - new script based graphical front end Win-PS2EXE.ps1 (WinForms, PowerShell 5.1+, no dependencies) replaces the legacy compiled Win-PS2EXE.exe; new exported function Show-WinPS2EXE, GUI settings persisted in %APPDATA%\ps2exe, command line preview window

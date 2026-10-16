@@ -152,14 +152,24 @@ Compiles C:\Data\MyScript.ps1 to C:\Data\MyScript7.exe as graphical executable t
 Win-PS2EXE
 Start graphical front end to Invoke-ps2exe
 .NOTES
-Version: 1.0.20
-Date: 2026.10.08
+Version: 1.0.21
+Date: 2026.10.15
 Author: Andrew Afanasiev
 Original Authors: Ingo Karstein, Markus Scholtes
 .LINK
+https://github.com/AfanasievAA/PS2EXE
 Original file at https://github.com/MScholtes/PS2EXE
 .CHANGELOG 
 ============================================
+[FIX]    Invoke-ps2exe: sessions with inherited environment (runas, scheduled
+         tasks, remote execution) could have TEMP/TMP point to another user's
+         temp dir, causing "Access denied" on all intermediate files. Now the
+         temp dir is probed before use; if not writable, TEMP/TMP are switched
+         to the output directory, else an error is reported.
+[CHG]    PS7 mode: syntax check and marker-offset parsing now use the PS7
+         parser via local pwsh.exe (avoids false positives like [ulong]).
+         Fallback to the 5.1 parser with "TypeNotFound" errors filtered out
+         if pwsh.exe is not found.
 [NEW]   Output file timestamps: the generated executable and the saved
         preprocessed script inherit the creation and modification times of
         the source script; with -mergeIncludes the newest creation and
@@ -242,138 +252,116 @@ Original file at https://github.com/MScholtes/PS2EXE
          -winFormsDPIAware and -STA/-MTA are ignored when -ps7 is specified.
          A warning is emitted for each ignored parameter.
 #>
-function Invoke-ps2exe
-{
+function Invoke-ps2exe {
     [CmdletBinding()]
-    Param([STRING]$inputFile = $NULL, [STRING]$outputFile = $NULL, [SWITCH]$prepareDebug, [SWITCH]$x86, [SWITCH]$x64, [int]$lcid,
+    param([STRING]$inputFile = $NULL, [STRING]$outputFile = $NULL, [SWITCH]$prepareDebug, [SWITCH]$x86, [SWITCH]$x64, [int]$lcid,
         [SWITCH]$STA, [SWITCH]$MTA, [SWITCH]$nested, [SWITCH]$noConsole, [SWITCH]$conHost, [SWITCH]$UNICODEEncoding, [SWITCH]$credentialGUI,
         [STRING]$iconFile = $NULL, $embedFiles = @{}, [STRING]$title, [STRING]$description, [STRING]$company, [STRING]$product, [STRING]$copyright, [STRING]$trademark,
         [STRING]$version, [SWITCH]$configFile, [SWITCH]$noConfigFile, [SWITCH]$noOutput, [SWITCH]$noError, [SWITCH]$noVisualStyles, [SWITCH]$exitOnCancel,
         [SWITCH]$DPIAware, [SWITCH]$winFormsDPIAware, [SWITCH]$requireAdmin, [SWITCH]$supportOS, [SWITCH]$virtualize, [SWITCH]$longPaths,
         [SWITCH]$ps7, [SWITCH]$removeAllComments, [SWITCH]$mergeIncludes, [SWITCH]$savePreprocessedScript)
 
-<################################################################################>
-<##                                                                            ##>
-<##      PS2EXE-GUI v1.0.20                                                    ##>
-<##      Rewritten by:  Andrew Afanasiev				                       ##>
-<##                                                                            ##>
-<##      This script is released under Microsoft Public Licence                ##>
-<##          that can be downloaded here:                                      ##>
-<##          http://www.microsoft.com/opensource/licenses.mspx#Ms-PL           ##>
-<##                                                                            ##>
-<################################################################################>
-
-    if (!$nested)
-    {
-        Write-Output "PS2EXE-GUI v1.0.20 by Ingo Karstein, reworked and GUI support by Markus Scholtes, PowerShell 7+ support (-ps7) and script preprocessing added by Andrew Afanasiev`n"
-    }
-    else
-    {
-        Write-Output "PowerShell Desktop environment started...`n"
-    }
+    <################################################################################>
+    <##                                                                            ##>
+    <##      PS2EXE-GUI v1.0.21                                                    ##>
+    <##      Rewritten by:  Andrew Afanasiev				                       ##>
+    <##                                                                            ##>
+    <##      This script is released under Microsoft Public Licence                ##>
+    <##          that can be downloaded here:                                      ##>
+    <##          http://www.microsoft.com/opensource/licenses.mspx#Ms-PL           ##>
+    <##                                                                            ##>
+    <################################################################################>
 
     # --- PS7 mode: warn about and reset incompatible parameters (they are ignored) ---
-    if ($ps7)
-    {
-        if ($conHost)
-        {
-            Write-Warning "-conHost is not applicable with -ps7 (pwsh.exe manages its own console). Ignoring -conHost."
+    if ($ps7) {
+        if ($conHost) {
+            Write-Warning '-conHost is not applicable with -ps7 (pwsh.exe manages its own console). Ignoring -conHost.'
             $conHost = $FALSE
         }
-        if ($credentialGUI)
-        {
-            Write-Warning "-credentialGUI is not applicable with -ps7 (credentials handled by pwsh.exe). Ignoring -credentialGUI."
+        if ($credentialGUI) {
+            Write-Warning '-credentialGUI is not applicable with -ps7 (credentials handled by pwsh.exe). Ignoring -credentialGUI.'
             $credentialGUI = $FALSE
         }
-        if ($UNICODEEncoding)
-        {
-            Write-Warning "-UNICODEEncoding is not applicable with -ps7 (pwsh.exe manages its own encoding). Ignoring -UNICODEEncoding."
+        if ($UNICODEEncoding) {
+            Write-Warning '-UNICODEEncoding is not applicable with -ps7 (pwsh.exe manages its own encoding). Ignoring -UNICODEEncoding.'
             $UNICODEEncoding = $FALSE
         }
-        if ($noOutput)
-        {
-            Write-Warning "-noOutput is not implemented with -ps7 (pwsh.exe output is passed through unchanged). Ignoring -noOutput."
+        if ($noOutput) {
+            Write-Warning '-noOutput is not implemented with -ps7 (pwsh.exe output is passed through unchanged). Ignoring -noOutput.'
             $noOutput = $FALSE
         }
-        if ($noError)
-        {
-            Write-Warning "-noError is not implemented with -ps7 (pwsh.exe output is passed through unchanged). Ignoring -noError."
+        if ($noError) {
+            Write-Warning '-noError is not implemented with -ps7 (pwsh.exe output is passed through unchanged). Ignoring -noError.'
             $noError = $FALSE
         }
-        if ($exitOnCancel)
-        {
-            Write-Warning "-exitOnCancel is not applicable with -ps7 (input boxes are not used). Ignoring -exitOnCancel."
+        if ($exitOnCancel) {
+            Write-Warning '-exitOnCancel is not applicable with -ps7 (input boxes are not used). Ignoring -exitOnCancel.'
             $exitOnCancel = $FALSE
         }
-        if ($configFile)
-        {
-            Write-Warning "-configFile is not applicable with -ps7 (no .config file is generated for the stub). Ignoring -configFile."
+        if ($configFile) {
+            Write-Warning '-configFile is not applicable with -ps7 (no .config file is generated for the stub). Ignoring -configFile.'
             $configFile = $FALSE
         }
-        if ($winFormsDPIAware)
-        {
-            Write-Warning "-winFormsDPIAware is not applicable with -ps7 (no .config file is generated for the stub, DPI awareness of the stub comes from -DPIAware). Ignoring -winFormsDPIAware."
+        if ($winFormsDPIAware) {
+            Write-Warning '-winFormsDPIAware is not applicable with -ps7 (no .config file is generated for the stub, DPI awareness of the stub comes from -DPIAware). Ignoring -winFormsDPIAware.'
             $winFormsDPIAware = $FALSE
         }
-        if ($STA -or $MTA)
-        {
-            Write-Warning "-STA/-MTA are not applicable with -ps7 (apartment state is managed by pwsh.exe). Ignoring -STA/-MTA."
+        if ($STA -or $MTA) {
+            Write-Warning '-STA/-MTA are not applicable with -ps7 (apartment state is managed by pwsh.exe). Ignoring -STA/-MTA.'
         }
-        if ($noConsole)
-        {
-            Write-Warning "With -ps7 and -noConsole interactive input (e.g. Read-Host) only works when the executable is started from a console, otherwise pwsh.exe has no usable stdin."
+        if ($noConsole) {
+            Write-Warning 'With -ps7 and -noConsole interactive input (e.g. Read-Host) only works when the executable is started from a console, otherwise pwsh.exe has no usable stdin.'
         }
     }
 
-    if ([STRING]::IsNullOrEmpty($inputFile))
-    {
+    if ([STRING]::IsNullOrEmpty($inputFile)) {
         Write-Output "Usage:`n"
         Write-Output "Invoke-ps2exe [-inputFile] '<filename>' [[-outputFile] '<filename>']"
-        Write-Output "              [-prepareDebug] [-x86|-x64] [-lcid <id>] [-STA|-MTA] [-noConsole] [-conHost] [-UNICODEEncoding]"
+        Write-Output '              [-prepareDebug] [-x86|-x64] [-lcid <id>] [-STA|-MTA] [-noConsole] [-conHost] [-UNICODEEncoding]'
         Write-Output "              [-credentialGUI] [-iconFile '<filename>'] [-title '<title>'] [-description '<description>']"
         Write-Output "              [-company '<company>'] [-product '<product>'] [-copyright '<copyright>'] [-trademark '<trademark>']"
         Write-Output "              [-version '<version>'] [-configFile] [-noOutput] [-noError] [-noVisualStyles] [-exitOnCancel]"
-        Write-Output "              [-DPIAware] [-winFormsDPIAware] [-requireAdmin] [-supportOS] [-virtualize] [-longPaths]"
+        Write-Output '              [-DPIAware] [-winFormsDPIAware] [-requireAdmin] [-supportOS] [-virtualize] [-longPaths]'
         Write-Output "              [-ps7] [-removeAllComments] [-mergeIncludes] [-savePreprocessedScript]`n"
-        Write-Output "       inputFile = Powershell script that you want to convert to executable (file has to be UTF8 or UTF16 encoded)"
+        Write-Output '       inputFile = Powershell script that you want to convert to executable (file has to be UTF8 or UTF16 encoded)'
         Write-Output "      outputFile = destination executable file name or folder, defaults to inputFile with extension '.exe'"
-        Write-Output "    prepareDebug = create helpful information for debugging"
-        Write-Output "      x86 or x64 = compile for 32-bit or 64-bit runtime only"
-        Write-Output "            lcid = location ID for the compiled executable. Current user culture if not specified"
+        Write-Output '    prepareDebug = create helpful information for debugging'
+        Write-Output '      x86 or x64 = compile for 32-bit or 64-bit runtime only'
+        Write-Output '            lcid = location ID for the compiled executable. Current user culture if not specified'
         Write-Output "      STA or MTA = 'Single Thread Apartment' or 'Multi Thread Apartment' mode"
-        Write-Output "       noConsole = the resulting executable will be a Windows Forms app without a console window"
-        Write-Output "         conHost = force start with conhost as console instead of Windows Terminal (disables redirections)"
-        Write-Output "                 = not applicable with -ps7"
-        Write-Output " UNICODEEncoding = encode output as UNICODE in console mode"
-        Write-Output "   credentialGUI = use GUI for prompting credentials in console mode"
-        Write-Output "        iconFile = icon file name for the compiled executable"
-        Write-Output "      embedFiles = files to embed given as hash, will be extracted to key of hash, source file names must be unique"
+        Write-Output '       noConsole = the resulting executable will be a Windows Forms app without a console window'
+        Write-Output '         conHost = force start with conhost as console instead of Windows Terminal (disables redirections)'
+        Write-Output '                 = not applicable with -ps7'
+        Write-Output ' UNICODEEncoding = encode output as UNICODE in console mode'
+        Write-Output '   credentialGUI = use GUI for prompting credentials in console mode'
+        Write-Output '        iconFile = icon file name for the compiled executable'
+        Write-Output '      embedFiles = files to embed given as hash, will be extracted to key of hash, source file names must be unique'
         Write-Output "                   (e.g. -embedFiles @{'Targetfilepath'='Sourcefilepath'} )"
         Write-Output "           title = title information (displayed in details tab of Windows Explorer's properties dialog)"
-        Write-Output "     description = description information (not displayed, but embedded in executable)"
-        Write-Output "         company = company information (not displayed, but embedded in executable)"
+        Write-Output '     description = description information (not displayed, but embedded in executable)'
+        Write-Output '         company = company information (not displayed, but embedded in executable)'
         Write-Output "         product = product information (displayed in details tab of Windows Explorer's properties dialog)"
         Write-Output "       copyright = copyright information (displayed in details tab of Windows Explorer's properties dialog)"
         Write-Output "       trademark = trademark information (displayed in details tab of Windows Explorer's properties dialog)"
         Write-Output "         version = version information (displayed in details tab of Windows Explorer's properties dialog)"
-        Write-Output "      configFile = write a config file (<outputfile>.exe.config)"
-        Write-Output "        noOutput = the resulting executable will generate no standard output (includes verbose and information channel)"
-        Write-Output "         noError = the resulting executable will generate no error output (includes warning and debug channel)"
-        Write-Output "  noVisualStyles = disable visual styles for a generated windows GUI application (only with -noConsole)"
-        Write-Output "    exitOnCancel = exits program when Cancel or ""X"" is selected in a Read-Host input box (only with -noConsole)"
-        Write-Output "        DPIAware = if display scaling is activated, GUI controls will be scaled if possible"
-        Write-Output "winFormsDPIAware = if display scaling is activated, WinForms use DPI scaling (requires Windows 10 and .Net 4.7 or up)"
-        Write-Output "    requireAdmin = if UAC is enabled, compiled executable run only in elevated context (UAC dialog appears if required)"
-        Write-Output "       supportOS = use functions of newest Windows versions (execute [Environment]::OSVersion to see the difference)"
-        Write-Output "      virtualize = application virtualization is activated (forcing x86 runtime)"
-        Write-Output "       longPaths = enable long paths ( > 260 characters) if enabled on OS (works only with Windows 10 or up)"
-        Write-Output "            ps7 = generate executable that runs script via pwsh.exe (PowerShell 7+)"
-        Write-Output "                 = PowerShell 7+ must be installed on target machine"
-        Write-Output "removeAllComments = strip all comments from the input script before embedding (here-string bodies kept verbatim)"
-        Write-Output "     mergeIncludes = inline all dot-sourced/call-operator/Import-Module files into one self-contained script"
-        Write-Output "                    = implies -removeAllComments, param blocks of includes become parameter assignments"
+        Write-Output '      configFile = write a config file (<outputfile>.exe.config)'
+        Write-Output '        noOutput = the resulting executable will generate no standard output (includes verbose and information channel)'
+        Write-Output '         noError = the resulting executable will generate no error output (includes warning and debug channel)'
+        Write-Output '  noVisualStyles = disable visual styles for a generated windows GUI application (only with -noConsole)'
+        Write-Output '    exitOnCancel = exits program when Cancel or "X" is selected in a Read-Host input box (only with -noConsole)'
+        Write-Output '        DPIAware = if display scaling is activated, GUI controls will be scaled if possible'
+        Write-Output 'winFormsDPIAware = if display scaling is activated, WinForms use DPI scaling (requires Windows 10 and .Net 4.7 or up)'
+        Write-Output '    requireAdmin = if UAC is enabled, compiled executable run only in elevated context (UAC dialog appears if required)'
+        Write-Output '       supportOS = use functions of newest Windows versions (execute [Environment]::OSVersion to see the difference)'
+        Write-Output '      virtualize = application virtualization is activated (forcing x86 runtime)'
+        Write-Output '       longPaths = enable long paths ( > 260 characters) if enabled on OS (works only with Windows 10 or up)'
+        Write-Output '            ps7 = generate executable that runs script via pwsh.exe (PowerShell 7+)'
+        Write-Output '                 = PowerShell 7+ must be installed on target machine'
+        Write-Output 'removeAllComments = strip all comments from the input script before embedding (here-string bodies kept verbatim)'
+        Write-Output '     mergeIncludes = inline all dot-sourced/call-operator/Import-Module files into one self-contained script'
+        Write-Output '                    = implies -removeAllComments, param blocks of includes become parameter assignments'
         Write-Output "savePreprocessedScript = save the preprocessed script next to the output executable (requires -removeAllComments or -mergeIncludes)`n"
-        Write-Output "Input file not specified!"
+        Write-Output 'Input file not specified!'
         return
     }
 
@@ -382,31 +370,26 @@ function Invoke-ps2exe
     # available in pwsh), so even in -ps7 mode the compile step itself runs in
     # powershell.exe. -ps7 only changes the generated stub: it spawns pwsh.exe at
     # runtime and needs no SMA / ConsoleHost / System.Core references.
-    if (!$nested -and ($PSVersionTable.PSEdition -eq "Core"))
-    { # starting Windows Powershell
-        $CallParam = ""
-        foreach ($Param in $PSBoundparameters.GetEnumerator())
-        {
-            if ($Param.Value -is [System.Management.Automation.SwitchParameter])
-            {	if ($Param.Value.IsPresent)
+    if (!$nested -and ($PSVersionTable.PSEdition -eq 'Core')) {
+        # starting Windows Powershell
+        $CallParam = ''
+        foreach ($Param in $PSBoundparameters.GetEnumerator()) {
+            if ($Param.Value -is [System.Management.Automation.SwitchParameter]) {
+                if ($Param.Value.IsPresent)
                 {	$CallParam += " -$($Param.Key):`$TRUE" }
                 else
                 { $CallParam += " -$($Param.Key):`$FALSE" }
-            }
-            else
-            {	if ($Param.Value -is [STRING])
-                {
-                    if (($Param.Value -match " ") -or ([STRING]::IsNullOrEmpty($Param.Value)))
+            } else {
+                if ($Param.Value -is [STRING]) {
+                    if (($Param.Value -match ' ') -or ([STRING]::IsNullOrEmpty($Param.Value)))
                     {	$CallParam += " -$($Param.Key) '$($Param.Value)'" }
                     else
                     {	$CallParam += " -$($Param.Key) $($Param.Value)" }
-                }
-                else
-                { if ($Param.Value -is [System.Collections.Hashtable])
-                    {
+                } else {
+                    if ($Param.Value -is [System.Collections.Hashtable]) {
                         $CallParam += " -$($Param.Key) @{"
-                        $Param.Value.Keys | % { $CallParam += "'$_'='$($Param.Value[$_])';" }
-                        $CallParam += "}"
+                        $Param.Value.Keys | ForEach-Object { $CallParam += "'$_'='$($Param.Value[$_])';" }
+                        $CallParam += '}'
                     } else {
                         $CallParam += " -$($Param.Key) $($Param.Value)"
                     }
@@ -414,264 +397,255 @@ function Invoke-ps2exe
             }
         }
 
-        $CallParam += " -nested"
+        $CallParam += ' -nested'
 
         powershell.exe -Command "if (@(Get-Command -Name 'Invoke-ps2exe' -ErrorAction 'SilentlyContinue').Length -eq 0) { Import-Module '$PSScriptRoot\ps2exe.psm1' }; &'$($MyInvocation.MyCommand.Name)' $CallParam"
         return
     }
 
-    if ($ps7)
-    {
+    if ($ps7) {
         Write-Output "PS7 mode: generating stub executable that runs script via pwsh.exe (PowerShell 7+)`n"
     }
 
     # retrieve absolute paths independent if path is given relative oder absolute
     $inputFile = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($inputFile)
-    if (($inputFile -match ("Rek4m2ell" -replace "k4m2", "vSh")) -or ($inputFile -match ("UpdatxK1q24147" -replace "xK1q", "e-KB45")))
-    {
-        Write-Error "PS2EXE did not compile this because PS2EXE does not like malware." -Category ParserError -ErrorId RuntimeException
+    if (($inputFile -match ('Rek4m2ell' -replace 'k4m2', 'vSh')) -or ($inputFile -match ('UpdatxK1q24147' -replace 'xK1q', 'e-KB45'))) {
+        Write-Error 'PS2EXE did not compile this because PS2EXE does not like malware.' -Category ParserError -ErrorId RuntimeException
         return
     }
-    if ([STRING]::IsNullOrEmpty($outputFile))
-    {
-        $outputFile = ([System.IO.Path]::Combine([System.IO.Path]::GetDirectoryName($inputFile), [System.IO.Path]::GetFileNameWithoutExtension($inputFile)+".exe"))
-    }
-    else
-    {
+    if ([STRING]::IsNullOrEmpty($outputFile)) {
+        $outputFile = ([System.IO.Path]::Combine([System.IO.Path]::GetDirectoryName($inputFile), [System.IO.Path]::GetFileNameWithoutExtension($inputFile) + '.exe'))
+    } else {
         $outputFile = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($outputFile)
-        if ((Test-Path -Literalpath $outputFile -PathType Container))
-        {
-            $outputFile = ([System.IO.Path]::Combine($outputFile, [System.IO.Path]::GetFileNameWithoutExtension($inputFile)+".exe"))
+        if ((Test-Path -LiteralPath $outputFile -PathType Container)) {
+            $outputFile = ([System.IO.Path]::Combine($outputFile, [System.IO.Path]::GetFileNameWithoutExtension($inputFile) + '.exe'))
         }
     }
 
-    if (!(Test-Path -LiteralPath $inputFile -PathType Leaf))
-    {
+    if (!(Test-Path -LiteralPath $inputFile -PathType Leaf)) {
         Write-Error "Input file $($inputfile) not found!"
         return
     }
 
-    if ($inputFile -eq $outputFile)
-    {
-        Write-Error "Input file is identical to output file!"
+    if ($inputFile -eq $outputFile) {
+        Write-Error 'Input file is identical to output file!'
         return
     }
 
-    if (($outputFile -notlike "*.exe") -and ($outputFile -notlike "*.com"))
-    {
+    if (($outputFile -notlike '*.exe') -and ($outputFile -notlike '*.com')) {
         Write-Error "Output file must have extension '.exe' or '.com'!"
         return
     }
 
-    if (!([STRING]::IsNullOrEmpty($iconFile)))
-    {
+    if (!([STRING]::IsNullOrEmpty($iconFile))) {
         # retrieve absolute path independent if path is given relative oder absolute
         $iconFile = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($iconFile)
 
-        if (!(Test-Path -LiteralPath $iconFile -PathType Leaf))
-        {
+        if (!(Test-Path -LiteralPath $iconFile -PathType Leaf)) {
             Write-Error "Icon file $($iconFile) not found!"
             return
         }
     }
 
-    if ($winFormsDPIAware)
-    {
+    if ($winFormsDPIAware) {
         $supportOS = $TRUE
     }
 
-    if ($noConsole -and $conHost)
-    {
-        Write-Error "-noConsole cannot be combined with -conHost"
+    if ($noConsole -and $conHost) {
+        Write-Error '-noConsole cannot be combined with -conHost'
         return
     }
-    if ($requireAdmin -and $virtualize)
-    {
-        Write-Error "-requireAdmin cannot be combined with -virtualize"
+    if ($requireAdmin -and $virtualize) {
+        Write-Error '-requireAdmin cannot be combined with -virtualize'
         return
     }
-    if ($supportOS -and $virtualize)
-    {
-        Write-Error "-supportOS cannot be combined with -virtualize"
+    if ($supportOS -and $virtualize) {
+        Write-Error '-supportOS cannot be combined with -virtualize'
         return
     }
-    if ($longPaths -and $virtualize)
-    {
-        Write-Error "-longPaths cannot be combined with -virtualize"
+    if ($longPaths -and $virtualize) {
+        Write-Error '-longPaths cannot be combined with -virtualize'
         return
     }
-    if ($savePreprocessedScript -and !$mergeIncludes -and !$removeAllComments)
-    {
-        Write-Warning "-savePreprocessedScript requires -mergeIncludes or -removeAllComments, ignoring -savePreprocessedScript."
+    if ($savePreprocessedScript -and !$mergeIncludes -and !$removeAllComments) {
+        Write-Warning '-savePreprocessedScript requires -mergeIncludes or -removeAllComments, ignoring -savePreprocessedScript.'
         $savePreprocessedScript = $FALSE
     }
 
     $CFGFILE = $FALSE
-    if ($configFile)
-    { $CFGFILE = $TRUE
-        if ($noConfigFile)
-        {
-            Write-Error "-configFile cannot be combined with -noConfigFile"
+    if ($configFile) {
+        $CFGFILE = $TRUE
+        if ($noConfigFile) {
+            Write-Error '-configFile cannot be combined with -noConfigFile'
             return
         }
     }
-    if (!$CFGFILE -and $longPaths -and !$ps7)
-    {
-        Write-Warning "Forcing generation of a config file, since the option -longPaths requires this"
+    if (!$CFGFILE -and $longPaths -and !$ps7) {
+        Write-Warning 'Forcing generation of a config file, since the option -longPaths requires this'
         $CFGFILE = $TRUE
     }
 
-    if (!$CFGFILE -and $winFormsDPIAware -and !$ps7)
-    {
-        Write-Warning "Forcing generation of a config file, since the option -winFormsDPIAware requires this"
+    if (!$CFGFILE -and $winFormsDPIAware -and !$ps7) {
+        Write-Warning 'Forcing generation of a config file, since the option -winFormsDPIAware requires this'
         $CFGFILE = $TRUE
     }
 
-    if ($STA -and $MTA)
-    {
-        Write-Error "You cannot use switches -STA and -MTA at the same time!"
+    if ($STA -and $MTA) {
+        Write-Error 'You cannot use switches -STA and -MTA at the same time!'
         return
     }
 
-    if (!$MTA -and !$STA)
-    {
+    if (!$MTA -and !$STA) {
         # Set default apartment mode for powershell version if not set by parameter
         $STA = $TRUE
     }
 
     # escape escape sequences in version info
-    $title = $title -replace "\\", "\\"
-    $product = $product -replace "\\", "\\"
-    $copyright = $copyright -replace "\\", "\\"
-    $trademark = $trademark -replace "\\", "\\"
-    $description = $description -replace "\\", "\\"
-    $company = $company -replace "\\", "\\"
+    $title = $title -replace '\\', '\\'
+    $product = $product -replace '\\', '\\'
+    $copyright = $copyright -replace '\\', '\\'
+    $trademark = $trademark -replace '\\', '\\'
+    $description = $description -replace '\\', '\\'
+    $company = $company -replace '\\', '\\'
 
-    if (![STRING]::IsNullOrEmpty($version))
-    { # check for correct version number information
-        if ($version -notmatch "(^\d+\.\d+\.\d+\.\d+$)|(^\d+\.\d+\.\d+$)|(^\d+\.\d+$)|(^\d+$)")
-        {
-            Write-Error "Version number has to be supplied in the form n.n.n.n, n.n.n, n.n or n (with n as number)!"
+    if (![STRING]::IsNullOrEmpty($version)) {
+        # check for correct version number information
+        if ($version -notmatch '(^\d+\.\d+\.\d+\.\d+$)|(^\d+\.\d+\.\d+$)|(^\d+\.\d+$)|(^\d+$)') {
+            Write-Error 'Version number has to be supplied in the form n.n.n.n, n.n.n, n.n or n (with n as number)!'
             return
         }
     }
 
-    Write-Output ""
+    Write-Output ''
 
-    $type = ('System.Collections.Generic.Dictionary`2') -as "Type"
-    $type = $type.MakeGenericType( @( ("System.String" -as "Type"), ("system.string" -as "Type") ) )
+    # Intermediate build files go to GetTempPath(); with inherited sessions (runas, scheduled tasks, etc.) TEMP may point to another user's temp and fail with "Access denied". Probe writability; if not writable, switch TEMP/TMP to the output directory, else abort.
+    $TestWritable = {
+        param([STRING]$Path)
+        $probeDir = $NULL
+        try {
+            $probeDir = [System.IO.Path]::Combine($Path, 'PS2EXE_probe_' + [System.Diagnostics.Process]::GetCurrentProcess().Id.ToString())
+            [System.IO.Directory]::CreateDirectory($probeDir) | Out-Null
+            [System.IO.File]::WriteAllText([System.IO.Path]::Combine($probeDir, 'probe.tmp'), '')
+            return $TRUE
+        } catch {
+            return $FALSE
+        } finally {
+            if ($probeDir -and (Test-Path -LiteralPath $probeDir))
+            { Remove-Item -LiteralPath $probeDir -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+    }
+
+    if (!(& $TestWritable ([System.IO.Path]::GetTempPath()))) {
+        $outputDir = [System.IO.Path]::GetDirectoryName($outputFile)
+        Write-Warning "Temp directory $([System.IO.Path]::GetTempPath()) is not writable for the current user (TEMP/TMP probably inherited from another user), trying the output file directory instead"
+        if (!(& $TestWritable $outputDir)) {
+            Write-Error "Neither the temp directory nor the output file directory ($outputDir) is writable for the current user. Compilation aborted."
+            return
+        }
+        # GetTempPath evaluates TMP before TEMP, so both variables have to be set
+        $env:TEMP = $outputDir.TrimEnd('\') + '\'
+        $env:TMP = $env:TEMP
+        Write-Warning "Using $env:TEMP as temp directory instead"
+    }
+
+    $type = ('System.Collections.Generic.Dictionary`2') -as 'Type'
+    $type = $type.MakeGenericType( @( ('System.String' -as 'Type'), ('system.string' -as 'Type') ) )
     $o = [Activator]::CreateInstance($type)
-    $o.Add("CompilerVersion", "v4.0")
+    $o.Add('CompilerVersion', 'v4.0')
 
     # ==================================================================
     # Reference assemblies: PS7 mode needs far fewer references than
     # the original mode (no SMA, no ConsoleHost, no System.Core)
     # ==================================================================
-    if ($ps7)
-    {
+    if ($ps7) {
         # --- PS7 stub mode: only need System.dll and WinForms (for -noConsole) ---
-        $referenceAssembies = @("System.dll")
-        if ($noConsole)
-        {
+        $referenceAssembies = @('System.dll')
+        if ($noConsole) {
             # Load WinForms and Drawing for GUI mode (message boxes, etc.)
             Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue
             Add-Type -AssemblyName System.Drawing -ErrorAction SilentlyContinue
 
-            $wfAsm = [System.AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.ManifestModule.Name -ieq "System.Windows.Forms.dll" } | Select-Object -First 1
+            $wfAsm = [System.AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.ManifestModule.Name -ieq 'System.Windows.Forms.dll' } | Select-Object -First 1
             if ($wfAsm -and ![STRING]::IsNullOrEmpty($wfAsm.Location))
             { $referenceAssembies += $wfAsm.Location }
 
-            $drawAsm = [System.AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.ManifestModule.Name -ieq "System.Drawing.dll" } | Select-Object -First 1
+            $drawAsm = [System.AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.ManifestModule.Name -ieq 'System.Drawing.dll' } | Select-Object -First 1
             if ($drawAsm -and ![STRING]::IsNullOrEmpty($drawAsm.Location))
             { $referenceAssembies += $drawAsm.Location }
         }
-    }
-    else
-    {
+    } else {
         # --- Original mode: full SMA / ConsoleHost / System.Core references ---
-        $referenceAssembies = @("System.dll")
-        if (!$noConsole)
-        {
-            if ([System.AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.ManifestModule.Name -ieq "Microsoft.PowerShell.ConsoleHost.dll" })
-            {
-                $referenceAssembies += ([System.AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.ManifestModule.Name -ieq "Microsoft.PowerShell.ConsoleHost.dll" } | Select-Object -First 1).Location
+        $referenceAssembies = @('System.dll')
+        if (!$noConsole) {
+            if ([System.AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.ManifestModule.Name -ieq 'Microsoft.PowerShell.ConsoleHost.dll' }) {
+                $referenceAssembies += ([System.AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.ManifestModule.Name -ieq 'Microsoft.PowerShell.ConsoleHost.dll' } | Select-Object -First 1).Location
             }
         }
-        $referenceAssembies += ([System.AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.ManifestModule.Name -ieq "System.Management.Automation.dll" } | Select-Object -First 1).Location
+        $referenceAssembies += ([System.AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.ManifestModule.Name -ieq 'System.Management.Automation.dll' } | Select-Object -First 1).Location
 
-        $n = New-Object System.Reflection.AssemblyName("System.Core, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089")
+        $n = New-Object System.Reflection.AssemblyName('System.Core, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089')
         [System.AppDomain]::CurrentDomain.Load($n) | Out-Null
-        $referenceAssembies += ([System.AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.ManifestModule.Name -ieq "System.Core.dll" } | Select-Object -First 1).Location
+        $referenceAssembies += ([System.AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.ManifestModule.Name -ieq 'System.Core.dll' } | Select-Object -First 1).Location
 
-        if ($noConsole)
-        {
-            $n = New-Object System.Reflection.AssemblyName("System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089")
+        if ($noConsole) {
+            $n = New-Object System.Reflection.AssemblyName('System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089')
             [System.AppDomain]::CurrentDomain.Load($n) | Out-Null
 
-            $n = New-Object System.Reflection.AssemblyName("System.Drawing, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a")
+            $n = New-Object System.Reflection.AssemblyName('System.Drawing, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a')
             [System.AppDomain]::CurrentDomain.Load($n) | Out-Null
 
-            $referenceAssembies += ([System.AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.ManifestModule.Name -ieq "System.Windows.Forms.dll" } | Select-Object -First 1).Location
-            $referenceAssembies += ([System.AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.ManifestModule.Name -ieq "System.Drawing.dll" } | Select-Object -First 1).Location
+            $referenceAssembies += ([System.AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.ManifestModule.Name -ieq 'System.Windows.Forms.dll' } | Select-Object -First 1).Location
+            $referenceAssembies += ([System.AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.ManifestModule.Name -ieq 'System.Drawing.dll' } | Select-Object -First 1).Location
         }
     }
 
-    $platform = "anycpu"
-    if ($x64 -and !$x86) { $platform = "x64" } else { if ($x86 -and !$x64) { $platform = "x86" }}
+    $platform = 'anycpu'
+    if ($x64 -and !$x86) { $platform = 'x64' } else { if ($x86 -and !$x64) { $platform = 'x86' } }
 
     $cop = (New-Object Microsoft.CSharp.CSharpCodeProvider($o))
     $cp = New-Object System.CodeDom.Compiler.CompilerParameters($referenceAssembies, $outputFile)
     $cp.GenerateInMemory = $FALSE
     $cp.GenerateExecutable = $TRUE
 
-    $iconFileParam = ""
-    if (!([STRING]::IsNullOrEmpty($iconFile)))
-    {
+    $iconFileParam = ''
+    if (!([STRING]::IsNullOrEmpty($iconFile))) {
         $iconFileParam = "`"/win32icon:$($iconFile)`""
     }
 
-    $manifestParam = ""
-    if ($requireAdmin -or $DPIAware -or $supportOS -or $longPaths)
-    {
-        $manifestParam = "`"/win32manifest:$($outputFile+".win32manifest")`""
+    $manifestParam = ''
+    if ($requireAdmin -or $DPIAware -or $supportOS -or $longPaths) {
+        $manifestParam = "`"/win32manifest:$($outputFile+'.win32manifest')`""
         $win32manifest = "<?xml version=""1.0"" encoding=""UTF-8"" standalone=""yes""?>`r`n<assembly xmlns=""urn:schemas-microsoft-com:asm.v1"" manifestVersion=""1.0"">`r`n"
-        if ($DPIAware -or $longPaths)
-        {
+        if ($DPIAware -or $longPaths) {
             $win32manifest += "<application xmlns=""urn:schemas-microsoft-com:asm.v3"">`r`n<windowsSettings>`r`n"
-            if ($DPIAware)
-            {
+            if ($DPIAware) {
                 $win32manifest += "<dpiAware xmlns=""http://schemas.microsoft.com/SMI/2005/WindowsSettings"">true</dpiAware>`r`n<dpiAwareness xmlns=""http://schemas.microsoft.com/SMI/2016/WindowsSettings"">PerMonitorV2</dpiAwareness>`r`n"
             }
-            if ($longPaths)
-            {
+            if ($longPaths) {
                 $win32manifest += "<longPathAware xmlns=""http://schemas.microsoft.com/SMI/2016/WindowsSettings"">true</longPathAware>`r`n"
             }
             $win32manifest += "</windowsSettings>`r`n</application>`r`n"
         }
-        if ($requireAdmin)
-        {
+        if ($requireAdmin) {
             $win32manifest += "<trustInfo xmlns=""urn:schemas-microsoft-com:asm.v2"">`r`n<security>`r`n<requestedPrivileges xmlns=""urn:schemas-microsoft-com:asm.v3"">`r`n<requestedExecutionLevel level=""requireAdministrator"" uiAccess=""false""/>`r`n</requestedPrivileges>`r`n</security>`r`n</trustInfo>`r`n"
         }
-        if ($supportOS)
-        {
+        if ($supportOS) {
             $win32manifest += "<compatibility xmlns=""urn:schemas-microsoft-com:compatibility.v1"">`r`n<application>`r`n<supportedOS Id=""{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}""/>`r`n<supportedOS Id=""{1f676c76-80e1-4239-95bb-83d0f6d0da78}""/>`r`n<supportedOS Id=""{4a2f28e3-53b9-4441-ba9c-d69d4a4a6e38}""/>`r`n<supportedOS Id=""{35138b9a-5d96-4fbd-8e2d-a2440225f93a}""/>`r`n<supportedOS Id=""{e2011457-1546-43c5-a5fe-008deee3d3f0}""/>`r`n</application>`r`n</compatibility>`r`n"
         }
-        $win32manifest += "</assembly>"
-        $win32manifest | Set-Content ($outputFile+".win32manifest") -Encoding UTF8
+        $win32manifest += '</assembly>'
+        $win32manifest | Set-Content ($outputFile + '.win32manifest') -Encoding UTF8
     }
 
     if (!$virtualize)
     { $cp.CompilerOptions = "/platform:$($platform) /target:$( if ($noConsole -or $conHost){'winexe'}else{'exe'}) $($iconFileParam) $($manifestParam)" }
-    else
-    {
-        Write-Output "Application virtualization is activated, forcing x86 platfom."
+    else {
+        Write-Output 'Application virtualization is activated, forcing x86 platfom.'
         $cp.CompilerOptions = "/platform:x86 /target:$( if ($noConsole -or $conHost) { 'winexe' } else { 'exe' } ) /nowin32manifest $($iconFileParam)"
     }
 
     $cp.IncludeDebugInformation = $prepareDebug
 
-    if ($prepareDebug)
-    {
+    if ($prepareDebug) {
         $cp.TempFiles.KeepFiles = $TRUE
     }
 
@@ -690,8 +664,7 @@ function Invoke-ps2exe
     # the path-variable marker is injected, so the AST parse below and
     # the embedded resource both see the final content.
     # ==================================================================
-    if ($mergeIncludes -or $removeAllComments)
-    {
+    if ($mergeIncludes -or $removeAllComments) {
         # Unique placeholder that temporarily replaces the param block of an
         # included file; substituted with explicit parameter assignments at
         # every inclusion point (see Convert-ParamBlockToAssignments)
@@ -711,8 +684,7 @@ function Invoke-ps2exe
             # Strict UTF-8 first: catches BOM-less UTF-8; invalid sequences => ANSI
             $text = try {
                 [System.Text.UTF8Encoding]::new($false, $true).GetString($bytes)
-            }
-            catch {
+            } catch {
                 [System.Text.Encoding]::Default.GetString($bytes)
             }
             if ($text.Length -gt 0 -and $text[0] -eq [char]0xFEFF) {
@@ -741,21 +713,18 @@ function Invoke-ps2exe
                 if ($inHereString) {
                     if ($line -eq $hereCloser) { $inHereString = $false }
                     $line
-                }
-                elseif ($inBlock) {
+                } elseif ($inBlock) {
                     if ($line -match '#>') {
                         $inBlock = $false
                         $tail = $line -replace '.*?#>', ''
                         if ($tail -match '<#') { $inBlock = $true; $tail = ($tail -split '<#', 2)[0] }
                         if ($tail.Trim().Length -gt 0) { $tail }
                     }
-                }
-                elseif ($line -match '@(?<q>["''])\s*$') {
+                } elseif ($line -match '@(?<q>["''])\s*$') {
                     $hereCloser = if ($Matches['q'] -eq '"') { '"@' } else { "'@" }
                     $inHereString = $true
                     $line
-                }
-                elseif ($line -match '^\s*#Requires\b') { $line }
+                } elseif ($line -match '^\s*#Requires\b') { $line }
                 elseif ($line -notmatch '^\s*#') {
                     # code line: strip paired inline block comments, then handle
                     # a block comment opened at the end of this line
@@ -799,16 +768,14 @@ function Invoke-ps2exe
             $Path = $Path.Trim('"').Trim("'")
             if ([System.IO.Path]::IsPathRooted($Path)) {
                 $candidate = $Path
-            }
-            else {
+            } else {
                 # Relative: combine with the supplied base folder
                 $candidate = Join-Path -Path $BaseDir -ChildPath $Path
             }
             # Resolve-Path normalises "./", "..", etc. and guarantees existence
             try {
                 $resolved = (Resolve-Path -LiteralPath $candidate -ErrorAction Stop).Path
-            }
-            catch {
+            } catch {
                 throw "Unable to resolve include path '$Path' (combined as '$candidate'). $($_.Exception.Message)"
             }
             # Ensure we really got a PowerShell script or module
@@ -837,14 +804,14 @@ function Invoke-ps2exe
                 [string] $CallContext = ''
             )
             $elements = @($Arguments)
-            $bound    = @{}
+            $bound = @{}
             $consumed = New-Object System.Collections.Generic.HashSet[int]
 
             # Pass 1: named arguments (-Name <expr> / -Name)
             for ($i = 0; $i -lt $elements.Count; $i++) {
                 $el = $elements[$i]
                 if ($el -isnot [System.Management.Automation.Language.CommandParameterAst]) { continue }
-                $pname  = $el.ParameterName
+                $pname = $el.ParameterName
                 $target = $Parameters | Where-Object { $_.Name -ieq $pname }
                 if (-not $target) {
                     $prefixMatches = @($Parameters | Where-Object { $_.Name -like "$pname*" })
@@ -856,11 +823,9 @@ function Invoke-ps2exe
                 }
                 if ($el.Argument) {
                     $bound[$target.Name] = $el.Argument.Extent.Text
-                }
-                elseif ($target.IsSwitch) {
+                } elseif ($target.IsSwitch) {
                     $bound[$target.Name] = '$true'
-                }
-                else {
+                } else {
                     # -Name without an attached value: the next positional element becomes its value
                     $val = $null
                     for ($j = $i + 1; $j -lt $elements.Count; $j++) {
@@ -909,14 +874,11 @@ function Invoke-ps2exe
             foreach ($p in $Parameters) {
                 if ($bound.ContainsKey($p.Name)) {
                     $value = $bound[$p.Name]
-                }
-                elseif ($p.HasDefault) {
+                } elseif ($p.HasDefault) {
                     $value = $p.DefaultText
-                }
-                elseif ($p.IsSwitch) {
+                } elseif ($p.IsSwitch) {
                     $value = '$false'
-                }
-                else {
+                } else {
                     $value = '$null'
                 }
                 $lines.Add(('$' + $p.Name + ' = ' + $value))
@@ -984,20 +946,20 @@ function Invoke-ps2exe
                     $paramList = New-Object System.Collections.Generic.List[hashtable]
                     foreach ($p in $ast.ParamBlock.Parameters) {
                         $isSwitch = [bool]($p.Attributes | Where-Object {
-                            $_ -is [System.Management.Automation.Language.TypeConstraintAst] -and
-                            $_.TypeName.Name -imatch '^(switch|SwitchParameter)$'
-                        })
+                                $_ -is [System.Management.Automation.Language.TypeConstraintAst] -and
+                                $_.TypeName.Name -imatch '^(switch|SwitchParameter)$'
+                            })
                         $isMandatory = [bool]($p.Attributes | Where-Object {
-                            $_ -is [System.Management.Automation.Language.AttributeAst] -and $_.TypeName.Name -ieq 'Parameter' -and
-                            ($_.NamedArguments | Where-Object { $_.ArgumentName -ieq 'Mandatory' -and (-not $_.Argument -or $_.Argument.Value -ne $false) })
-                        })
+                                $_ -is [System.Management.Automation.Language.AttributeAst] -and $_.TypeName.Name -ieq 'Parameter' -and
+                                ($_.NamedArguments | Where-Object { $_.ArgumentName -ieq 'Mandatory' -and (-not $_.Argument -or $_.Argument.Value -ne $false) })
+                            })
                         $paramList.Add(@{
-                            Name        = $p.Name.VariablePath.UserPath
-                            HasDefault  = ($null -ne $p.DefaultValue)
-                            DefaultText = if ($null -ne $p.DefaultValue) { $p.DefaultValue.Extent.Text } else { $null }
-                            IsSwitch    = $isSwitch
-                            IsMandatory = $isMandatory
-                        })
+                                Name = $p.Name.VariablePath.UserPath
+                                HasDefault = ($null -ne $p.DefaultValue)
+                                DefaultText = if ($null -ne $p.DefaultValue) { $p.DefaultValue.Extent.Text } else { $null }
+                                IsSwitch = $isSwitch
+                                IsMandatory = $isMandatory
+                            })
                     }
                     $ParamInfo[$FilePath] = $paramList
 
@@ -1013,10 +975,10 @@ function Invoke-ps2exe
             $lines = $contentNoComments -split "`r?`n"
 
             # Include forms: dot-source (.), call operator (&), Import-Module/ipmo
-            $pathGroup       = '["'']?((?:"[^"]*"|''[^'']*''|[^\s"'''']+\.(?:ps1|psm1|psd1)))'
+            $pathGroup = '["'']?((?:"[^"]*"|''[^'']*''|[^\s"'''']+\.(?:ps1|psm1|psd1)))'
             $dotSourcePattern = '^\s*\.\s+' + $pathGroup
-            $callPattern      = '^\s*&\s+' + $pathGroup
-            $importPattern    = '^\s*(?i:(Import-Module|ipmo))\s+' + $pathGroup
+            $callPattern = '^\s*&\s+' + $pathGroup
+            $importPattern = '^\s*(?i:(Import-Module|ipmo))\s+' + $pathGroup
 
             $outputLines = New-Object System.Collections.Generic.List[string]
 
@@ -1060,12 +1022,10 @@ function Invoke-ps2exe
                             if ($null -eq $Requirements['Version'] -or $v -gt $Requirements['Version']) {
                                 $Requirements['Version'] = $v
                             }
-                        }
-                        catch {
+                        } catch {
                             [void]$Requirements['Others'].Add($ln.Trim())
                         }
-                    }
-                    else {
+                    } else {
                         [void]$Requirements['Others'].Add($ln.Trim())
                     }
                     continue
@@ -1077,8 +1037,7 @@ function Invoke-ps2exe
                 if (-not $IsRoot -and $ln -match '^\s*using\s+(?<kw>namespace|module|assembly)\b') {
                     if ($Matches['kw'] -ieq 'namespace') {
                         [void]$Requirements['Usings'].Add($ln.Trim())
-                    }
-                    else {
+                    } else {
                         Write-Warning "'using $($Matches['kw'])' in included file is dropped, it is not valid mid-script (in file $FilePath)."
                     }
                     continue
@@ -1090,7 +1049,7 @@ function Invoke-ps2exe
                     Write-Warning "Export-ModuleMember dropped, it is only valid inside a module (in file $FilePath)."
                     continue
                 }
-                $rawPath   = $null
+                $rawPath = $null
                 $importKind = $null
                 if ($ln -match $dotSourcePattern) { $rawPath = $Matches[1]; $importKind = 'dot-source' }
                 elseif ($ln -match $callPattern) { $rawPath = $Matches[1]; $importKind = 'call-operator' }
@@ -1125,8 +1084,7 @@ function Invoke-ps2exe
                         try {
                             $includePath = Resolve-RelativePath -Path $rawPath -BaseDir $baseDir
                             break
-                        }
-                        catch {
+                        } catch {
                             $resolveError = $_
                         }
                     }
@@ -1141,8 +1099,7 @@ function Invoke-ps2exe
                     if ($importKind -eq 'import-module' -and $argText.Length -gt 0) {
                         # Import-Module flags (-Force, -Global, -PassThru, ...) do not map to script parameters: drop them
                         Write-Warning "Import-Module arguments '$argText' are ignored (in file $FilePath)."
-                    }
-                    elseif ($argText.Length -gt 0) {
+                    } elseif ($argText.Length -gt 0) {
                         $tokens = $null; $callErrors = $null
                         # Accept any operator (. / &) and Import-Module commands alike
                         $callAst = [System.Management.Automation.Language.Parser]::ParseInput($ln, [ref]$tokens, [ref]$callErrors)
@@ -1161,20 +1118,18 @@ function Invoke-ps2exe
                     if ($ParamInfo.ContainsKey($includePath)) {
                         $assignments = Convert-ParamBlockToAssignments -Parameters $ParamInfo[$includePath] -Arguments $callArgs -CallContext "in file $FilePath -> $includePath"
                         $includedContent = $includedContent.Replace($paramBlockMarker, [string]::Join("`r`n", $assignments))
-                    }
-                    elseif ($callArgs.Count -gt 0) {
+                    } elseif ($callArgs.Count -gt 0) {
                         Write-Warning "Arguments passed to '$includePath' which has no param block; arguments ignored (in file $FilePath)."
                     }
 
                     $outputLines.Add("#region Included ($importKind) from $rawPath")
                     $outputLines.Add($includedContent)
-                    $outputLines.Add("#endregion")
+                    $outputLines.Add('#endregion')
                     if ($tail) {
                         Write-Warning "Trailing code after an include call is moved after the include; include calls inside it are NOT expanded (in file $FilePath, line: '$ln')"
                         $outputLines.Add($tail)
                     }
-                }
-                else {
+                } else {
                     $outputLines.Add($ln)
                 }
             }
@@ -1185,9 +1140,8 @@ function Invoke-ps2exe
             return $final
         }
 
-        if ($mergeIncludes)
-        {
-            Write-Output "Merging includes..."
+        if ($mergeIncludes) {
+            Write-Output 'Merging includes...'
             # project root (folder containing the "source" sub-folder): relative
             # include paths like ".\source\inc\x.ps1" resolve against it
             $rootFolder = Get-ProjectRoot -StartPath $inputFile
@@ -1196,16 +1150,13 @@ function Invoke-ps2exe
             $paramInfo = @{}
             # Fail fast like the rest of ps2exe: report via Write-Error and stop
             # instead of letting a merge exception surface as an unhandled error
-            try
-            {
+            try {
                 # the cache is created here instead of inside Expand-Includes so it
                 # survives the call: its keys are the complete list of processed
                 # files (root and includes) used for the output reference timestamps
                 $mergeCache = @{}
                 $scriptContent = Expand-Includes -FilePath $inputFile -RootFolder $rootFolder -InputFolder $inputFolder -Cache $mergeCache -IsRoot -Requirements $scriptRequirements -ParamInfo $paramInfo
-            }
-            catch
-            {
+            } catch {
                 Write-Error "Merging includes failed: $($_.Exception.Message)"
                 return
             }
@@ -1215,7 +1166,7 @@ function Invoke-ps2exe
             # Safety net: every param-block marker must have been substituted with
             # assignments by now; a leftover means an internal error.
             if ($scriptContent.Contains($paramBlockMarker)) {
-                Write-Error "Internal error: unreplaced param-block marker left in the merged content."
+                Write-Error 'Internal error: unreplaced param-block marker left in the merged content.'
                 return
             }
             # Prepend a single consolidated header: the highest required version among
@@ -1234,10 +1185,8 @@ function Invoke-ps2exe
             if ($requiresHeader.Count -gt 0) {
                 $scriptContent = [string]::Join("`r`n", $requiresHeader) + "`r`n" + $scriptContent
             }
-        }
-        else
-        {
-            Write-Output "Removing comments..."
+        } else {
+            Write-Output 'Removing comments...'
             # re-read with full encoding detection: the StreamReader above decodes
             # lenient UTF-8 and would turn invalid sequences into U+FFFD instead
             # of falling back to ANSI like the merge path does
@@ -1254,11 +1203,9 @@ function Invoke-ps2exe
     $refLastWriteTime = $null
     $refFiles = @($inputFile)
     if ($mergeIncludes -and $null -ne $mergeCache -and $mergeCache.Count -gt 0) { $refFiles = @($mergeCache.Keys) }
-    foreach ($rf in $refFiles)
-    {
+    foreach ($rf in $refFiles) {
         $rfi = Get-Item -LiteralPath $rf -ErrorAction SilentlyContinue
-        if ($rfi)
-        {
+        if ($rfi) {
             if ($null -eq $refCreationTime -or $rfi.CreationTime -gt $refCreationTime) { $refCreationTime = $rfi.CreationTime }
             if ($null -eq $refLastWriteTime -or $rfi.LastWriteTime -gt $refLastWriteTime) { $refLastWriteTime = $rfi.LastWriteTime }
         }
@@ -1267,56 +1214,145 @@ function Invoke-ps2exe
     # Optional: save the preprocessed script next to the output executable for
     # review or standalone re-use. Runs BEFORE the PS2EXE path variable marker
     # is injected, so the saved file is a valid standalone PowerShell script.
-    if ($savePreprocessedScript)
-    {
-        $preprocessedFile = [System.IO.Path]::Combine([System.IO.Path]::GetDirectoryName($outputFile), [System.IO.Path]::GetFileNameWithoutExtension($outputFile)+".ps1")
-        if ([STRING]::Equals($preprocessedFile, $inputFile, [System.StringComparison]::OrdinalIgnoreCase))
-        { # saving would overwrite the input file: refuse instead of destroying the source
+    if ($savePreprocessedScript) {
+        $preprocessedFile = [System.IO.Path]::Combine([System.IO.Path]::GetDirectoryName($outputFile), [System.IO.Path]::GetFileNameWithoutExtension($outputFile) + '.ps1')
+        if ([STRING]::Equals($preprocessedFile, $inputFile, [System.StringComparison]::OrdinalIgnoreCase)) {
+            # saving would overwrite the input file: refuse instead of destroying the source
             Write-Warning "Preprocessed script not saved: '$preprocessedFile' is identical to the input file."
-        }
-        else
-        {
+        } else {
             [System.IO.File]::WriteAllText($preprocessedFile, $scriptContent, (New-Object System.Text.UTF8Encoding($TRUE)))
             Write-Output "Preprocessed script saved to $preprocessedFile"
             # inherit the reference timestamps determined above; failures
             # (locked file, exotic file system) downgrade to a warning
-            if ($null -ne $refCreationTime -and $null -ne $refLastWriteTime)
-            {
-                try
-                {
+            if ($null -ne $refCreationTime -and $null -ne $refLastWriteTime) {
+                try {
                     $preItem = Get-Item -LiteralPath $preprocessedFile
                     $preItem.LastWriteTime = $refLastWriteTime
                     $preItem.CreationTime = $refCreationTime
-                }
-                catch
-                {
+                } catch {
                     Write-Warning "Could not set file times on '$preprocessedFile': $($_.Exception.Message)"
                 }
             }
         }
     }
 
-    $tokens = $NULL
-    $parseErrors = $NULL
-    $scriptAst = [System.Management.Automation.Language.Parser]::ParseInput($scriptContent, [REF]$tokens, [REF]$parseErrors)
+    # --- Syntax check and marker offset ---
+    # Compilation always runs in powershell.exe, so the parser built into this
+    # process is the Windows PowerShell 5.1 one. The script target differs:
+    # - without -ps7 the script executes in-process on .NET Framework: the local
+    #   5.1 parser is authoritative, its errors match the runtime exactly.
+    # - with -ps7 the script executes under pwsh.exe (PowerShell 7+): the parse is
+    #   delegated to a local pwsh.exe. The PS7 parser knows the PS7 syntax and type
+    #   accelerators ([ulong] etc.) and resolves type literals at runtime instead
+    #   of parse time, so no false positives occur and the marker offset is
+    #   computed with the parser that really executes the script (important when
+    #   PS7-only syntax appears inside the param block or in using statements:
+    #   the 5.1 parser may not recognize the param block then and the marker
+    #   would be injected before it, which breaks the script at runtime).
+    # If no pwsh.exe is available on the compile machine, the 5.1 parser is used
+    # as a fallback and "TypeNotFound" errors are filtered out in -ps7 mode.
+    $parseErrors = @()
     $injectOffset = 0
-    if ($scriptAst)
-    {
-        if ($scriptAst.ParamBlock)
-        {
-            $injectOffset = $scriptAst.ParamBlock.Extent.EndOffset
-        }
-        $usingAsts = $scriptAst.FindAll({ $args[0] -is [System.Management.Automation.Language.UsingStatementAst] }, $FALSE)
-        if ($usingAsts)
-        {
-            $lastUsingEnd = ($usingAsts | ForEach-Object { $_.Extent.EndOffset } | Measure-Object -Maximum).Maximum
-            if ($lastUsingEnd -gt $injectOffset) { $injectOffset = $lastUsingEnd }
+    $parsedWithPwsh = $FALSE
+
+    if ($ps7) {
+        # locate pwsh.exe on the compile machine
+        $pwshExe = $NULL
+        try { $pwshExe = (Get-Command -Name pwsh.exe -ErrorAction SilentlyContinue).Source } catch { }
+        if (!$pwshExe -and $env:ProgramW6432 -and (Test-Path -LiteralPath "$env:ProgramW6432\PowerShell\7\pwsh.exe"))
+        { $pwshExe = "$env:ProgramW6432\PowerShell\7\pwsh.exe" }
+        if (!$pwshExe -and (Test-Path -LiteralPath "$env:ProgramFiles\PowerShell\7\pwsh.exe"))
+        { $pwshExe = "$env:ProgramFiles\PowerShell\7\pwsh.exe" }
+
+        if ($pwshExe) {
+            # write the script content to a temp file in UTF8 with BOM: pwsh.exe then
+            # reads the exact same string this process embeds as a resource, so the
+            # offset returned by the PS7 parser is valid for the marker injection
+            $parseInputFile = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), 'PS2EXE_parse_' + [System.Guid]::NewGuid().ToString('N') + '.tmp')
+            $parseResultFile = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), 'PS2EXE_parse_' + [System.Guid]::NewGuid().ToString('N') + '.json')
+            [System.IO.File]::WriteAllText($parseInputFile, $scriptContent, (New-Object System.Text.UTF8Encoding($TRUE)))
+
+            # helper for pwsh.exe: parse the script and write offset and errors as JSON
+            # to a file (a file is used instead of stdout, since the console encodings
+            # of the calling and the called process may differ). The here-string is
+            # single quoted and contains no double quotes, because embedded double
+            # quotes would not survive the native command line of powershell.exe;
+            # paths are inserted via placeholders with doubled single quotes.
+            $parseHelper = @'
+ $path = '%%INPUTFILE%%'
+ $resultPath = '%%RESULTFILE%%'
+ $content = [System.IO.File]::ReadAllText($path)
+ $tokens = $null
+ $errors = $null
+ $ast = [System.Management.Automation.Language.Parser]::ParseInput($content, [ref]$tokens, [ref]$errors)
+ $offset = 0
+if ($ast) {
+    if ($ast.ParamBlock) { $offset = $ast.ParamBlock.Extent.EndOffset }
+    $usings = $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.UsingStatementAst] }, $false)
+    if ($usings) {
+        $maxUsing = ($usings | ForEach-Object { $_.Extent.EndOffset } | Measure-Object -Maximum).Maximum
+        if ($maxUsing -gt $offset) { $offset = $maxUsing }
+    }
+}
+ $result = [pscustomobject]@{
+    Offset = $offset
+    Errors = @(foreach ($e in $errors) { [pscustomobject]@{ Line = $e.Extent.StartLineNumber; Message = $e.Message; ErrorId = $e.ErrorId } })
+}
+[System.IO.File]::WriteAllText($resultPath, ($result | ConvertTo-Json -Depth 4 -Compress), (New-Object System.Text.UTF8Encoding($false)))
+'@
+            $parseHelper = $parseHelper.Replace('%%INPUTFILE%%', $parseInputFile.Replace("'", "''")).Replace('%%RESULTFILE%%', $parseResultFile.Replace("'", "''"))
+
+            try {
+                & $pwshExe -NoProfile -NoLogo -NonInteractive -Command $parseHelper 2>$NULL | Out-Null
+                if (Test-Path -LiteralPath $parseResultFile) {
+                    $parseResult = ConvertFrom-Json ([System.IO.File]::ReadAllText($parseResultFile))
+                    $injectOffset = [int]$parseResult.Offset
+                    # normalize to a uniform error shape (Line/Message/ErrorId)
+                    $parseErrors = @($parseResult.Errors | Where-Object { $_ } | ForEach-Object { [pscustomobject]@{ Line = [int]$_.Line; Message = [string]$_.Message; ErrorId = [string]$_.ErrorId } })
+                    $parsedWithPwsh = $TRUE
+                }
+            } catch { }
+            finally {
+                Remove-Item -LiteralPath $parseInputFile -Force -ErrorAction SilentlyContinue
+                Remove-Item -LiteralPath $parseResultFile -Force -ErrorAction SilentlyContinue
+            }
+        } else {
+            Write-Warning 'No pwsh.exe found on the compile machine, the script is checked with the Windows PowerShell 5.1 parser instead (errors for PS7-specific syntax or types may be false positives).'
         }
     }
-    if ($parseErrors -and $parseErrors.Count -gt 0)
-    {
-        Write-Warning "The input file contains PowerShell syntax errors, the generated executable may fail at runtime:"
-        foreach ($pe in $parseErrors) { Write-Warning "  line $($pe.Extent.StartLineNumber): $($pe.Message)" }
+
+    if (!$parsedWithPwsh) {
+        $tokens = $NULL
+        $parseErrors = $NULL
+        $scriptAst = [System.Management.Automation.Language.Parser]::ParseInput($scriptContent, [REF]$tokens, [REF]$parseErrors)
+        # normalize to the same error shape as the pwsh.exe path
+        $parseErrors = @($parseErrors | Where-Object { $_ } | ForEach-Object { [pscustomobject]@{ Line = $_.Extent.StartLineNumber; Message = $_.Message; ErrorId = $_.ErrorId } })
+        if ($scriptAst) {
+            if ($scriptAst.ParamBlock) {
+                $injectOffset = $scriptAst.ParamBlock.Extent.EndOffset
+            }
+            $usingAsts = $scriptAst.FindAll({ $args[0] -is [System.Management.Automation.Language.UsingStatementAst] }, $FALSE)
+            if ($usingAsts) {
+                $lastUsingEnd = ($usingAsts | ForEach-Object { $_.Extent.EndOffset } | Measure-Object -Maximum).Maximum
+                if ($lastUsingEnd -gt $injectOffset) { $injectOffset = $lastUsingEnd }
+            }
+        }
+    }
+
+    if ($parseErrors.Count -gt 0) {
+        $reportedErrors = $parseErrors
+        if ($ps7 -and !$parsedWithPwsh)
+        { $reportedErrors = @($parseErrors | Where-Object { $_.ErrorId -ne 'TypeNotFound' }) }
+
+        if ($reportedErrors.Count -gt 0) {
+            if ($parsedWithPwsh)
+            { Write-Warning 'The input file contains PowerShell 7 syntax errors, the generated executable may fail at runtime:' }
+            elseif ($ps7)
+            { Write-Warning 'The input file contains PowerShell syntax errors according to the Windows PowerShell 5.1 parser (the executable runs on PowerShell 7, so errors for PS7-specific syntax or types may be false positives):' }
+            else
+            { Write-Warning 'The input file contains PowerShell syntax errors, the generated executable may fail at runtime:' }
+            foreach ($pe in $reportedErrors) { Write-Warning "  line $($pe.Line): $($pe.Message)" }
+        }
     }
 
     # Insert the marker on its own line. EndOffset points directly after the
@@ -1329,21 +1365,19 @@ function Invoke-ps2exe
     $scriptContent = $scriptContent.Insert($injectOffset, $marker)
 
     # embed the transformed script under the original file name (resource name)
-    $embedDir = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), "PS2EXE_" + [System.Guid]::NewGuid().ToString("N"))
+    $embedDir = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), 'PS2EXE_' + [System.Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $embedDir | Out-Null
     $embeddedScriptFile = [System.IO.Path]::Combine($embedDir, [System.IO.Path]::GetFileName($inputFile))
     [System.IO.File]::WriteAllText($embeddedScriptFile, $scriptContent, (New-Object System.Text.UTF8Encoding($TRUE)))
     [VOID]$cp.EmbeddedResources.Add($embeddedScriptFile)
 
-    $EMBEDSECTION = ""
-    if ($embedFiles -is [HASHTABLE])
-    {
-        if ($embedFiles.Count -gt 0)
-        {
+    $EMBEDSECTION = ''
+    if ($embedFiles -is [HASHTABLE]) {
+        if ($embedFiles.Count -gt 0) {
             Write-Output "Embedding $($embedFiles.Count) file(s)"
             $EMBEDSECTION = "string tgtFile = string.Empty, tgtDir = string.Empty;`r`n"
 
-            $embedFiles.Keys | % {
+            $embedFiles.Keys | ForEach-Object {
                 [VOID]$cp.EmbeddedResources.Add($embedFiles["$_"])
                 $EMBEDSECTION += "tgtFile = Environment.ExpandEnvironmentVariables(@`"$_`");`r`nif (string.Compare(`".\\`", 0, tgtFile, 0, 2) == 0) { tgtFile = System.AppDomain.CurrentDomain.BaseDirectory + tgtFile.Substring(2); }`r`ntry { tgtDir = System.IO.Path.GetDirectoryName(tgtFile);`r`nif (tgtDir != string.Empty) { System.IO.Directory.CreateDirectory(tgtDir); }`r`nusing (System.IO.Stream tgtStream = new System.IO.FileStream(tgtFile, System.IO.FileMode.Create)) { executingAssembly.GetManifestResourceStream(`"$([System.IO.Path]::GetFileName($embedFiles["$_"]))`").CopyTo(tgtStream); }`r`n}`r`ncatch { throw new System.IO.IOException(`"Error creating '`" + tgtFile + `"'\r\n`"); }`r`n"
             }
@@ -1354,9 +1388,8 @@ function Invoke-ps2exe
     # $culture: C# statements for the in-process host (PS 5.1 mode).
     # In PS7 mode the culture statements are inserted at runtime together with
     # the path variables when the marker in the embedded script is replaced.
-    $culture = ""
-    if ($lcid)
-    {
+    $culture = ''
+    if ($lcid) {
         $culture = @"
 System.Threading.Thread.CurrentThread.CurrentCulture = System.Globalization.CultureInfo.GetCultureInfo($lcid);
 System.Threading.Thread.CurrentThread.CurrentUICulture = System.Globalization.CultureInfo.GetCultureInfo($lcid);
@@ -1366,8 +1399,7 @@ System.Threading.Thread.CurrentThread.CurrentUICulture = System.Globalization.Cu
     # ==================================================================
     # C# program template: choose between PS7 stub and original host
     # ==================================================================
-    if ($ps7)
-    {
+    if ($ps7) {
         # ==================================================================
         # PS7 STUB TEMPLATE
         # Generates a lightweight .NET Framework EXE that:
@@ -1388,10 +1420,10 @@ using System.Text;
 using System.Reflection;
 using System.Diagnostics;
 using System.IO;
- $(if ($noConsole) {@"
+ $(if ($noConsole) {@'
 using System.Windows.Forms;
 using System.Drawing;
-"@ })
+'@ })
 
 [assembly:AssemblyTitle("$title")]
 [assembly:AssemblyProduct("$product")]
@@ -1572,7 +1604,7 @@ namespace PS2EXE_PS7
         [STAThread]
         private static int Main(string[] args)
         {
- $(if (!$noVisualStyles -and $noConsole) { "			Application.EnableVisualStyles();" })
+ $(if (!$noVisualStyles -and $noConsole) { '			Application.EnableVisualStyles();' })
 
             AppDomain.CurrentDomain.UnhandledException += new UnhandledExceptionEventHandler(CurrentDomain_UnhandledException);
 
@@ -1580,13 +1612,13 @@ namespace PS2EXE_PS7
             string pwshExe = FindPwshExe();
             if (string.IsNullOrEmpty(pwshExe))
             {
- $(if (!$noConsole) {@"
+ $(if (!$noConsole) {@'
                 Console.Error.WriteLine("ERROR: PowerShell 7+ not found. Please install PowerShell 7+ from https://github.com/PowerShell/PowerShell");
                 return 1;
-"@ } else {@"
+'@ } else {@'
                 MessageBox.Show("PowerShell 7+ not found. Please install PowerShell 7+ from https://github.com/PowerShell/PowerShell", AppDomain.CurrentDomain.FriendlyName, MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return 1;
-"@ })
+'@ })
             }
 
             // --- Parse reserved arguments ---
@@ -1606,11 +1638,11 @@ namespace PS2EXE_PS7
                     string[] s1 = s.Split(new string[] { ":" }, 2, StringSplitOptions.RemoveEmptyEntries);
                     if (s1.Length != 2)
                     {
- $(if (!$noConsole) {@"
+ $(if (!$noConsole) {@'
                         Console.WriteLine("If you specify the -extract option you need to add a file for extraction in this way\r\n   -extract:\"<filename>\"");
-"@ } else {@"
+'@ } else {@'
                         MessageBox.Show("If you specify the -extract option you need to add a file for extraction in this way\r\n   -extract:\"<filename>\"", AppDomain.CurrentDomain.FriendlyName, MessageBoxButtons.OK, MessageBoxIcon.Error);
-"@ })
+'@ })
                         return 1;
                     }
                     extractFN = s1[1].Trim(new char[] { '\"' });
@@ -1711,10 +1743,10 @@ namespace PS2EXE_PS7
             psi.FileName = pwshExe;
             psi.Arguments = pwshArgs.ToString();
 
- $(if (!$noConsole) {@"
+ $(if (!$noConsole) {@'
             // Console mode: inherit console for interactive input/output
             psi.UseShellExecute = false;
-"@ } else {@"
+'@ } else {@'
             // GUI mode: hidden window, capture output
             psi.UseShellExecute = false;
             psi.RedirectStandardOutput = true;
@@ -1722,9 +1754,9 @@ namespace PS2EXE_PS7
             psi.CreateNoWindow = true;
             psi.StandardOutputEncoding = System.Text.Encoding.UTF8;
             psi.StandardErrorEncoding = System.Text.Encoding.UTF8;
-"@ })
+'@ })
 
- $(if (!$noConsole) {@"
+ $(if (!$noConsole) {@'
             // Keep the stub alive on Ctrl+C: pwsh.exe receives the same console event and
             // terminates by itself, so the stub can wait for it, delete the temp script and
             // forward the exit code (without this handler the temp script leaks on Ctrl+C)
@@ -1732,7 +1764,7 @@ namespace PS2EXE_PS7
             {
                 e.Cancel = true;
             });
-"@ })
+'@ })
             Process process;
             try
             {
@@ -1740,16 +1772,16 @@ namespace PS2EXE_PS7
             }
             catch (Exception ex)
             {
- $(if (!$noConsole) {@"
+ $(if (!$noConsole) {@'
                 Console.Error.WriteLine("Failed to start PowerShell 7+: " + ex.Message);
-"@ } else {@"
+'@ } else {@'
                 MessageBox.Show("Failed to start PowerShell 7+: " + ex.Message, AppDomain.CurrentDomain.FriendlyName, MessageBoxButtons.OK, MessageBoxIcon.Error);
-"@ })
+'@ })
                 try { File.Delete(tempScript); } catch { }
                 return 1;
             }
 
- $(if ($noConsole) {@"
+ $(if ($noConsole) {@'
             // GUI mode: capture all output. Stderr is read asynchronously to avoid
             // a deadlock when the script fills the stderr pipe while stdout is read.
             StringBuilder stderrBuilder = new StringBuilder();
@@ -1760,35 +1792,35 @@ namespace PS2EXE_PS7
             process.BeginErrorReadLine();
             string stdoutOutput = process.StandardOutput.ReadToEnd();
             string stderrOutput = "";
-"@ })
+'@ })
 
             process.WaitForExit();
             int exitCode = process.ExitCode;
- $(if ($noConsole) {@"
+ $(if ($noConsole) {@'
             // async stderr read is guaranteed to be complete after WaitForExit()
             stderrOutput = stderrBuilder.ToString();
-"@ })
+'@ })
 
             // --- Clean up temp script ---
             try { File.Delete(tempScript); } catch { }
 
- $(if ($noConsole) {@"
+ $(if ($noConsole) {@'
             // --- Show output in GUI mode ---
             if (!string.IsNullOrEmpty(stderrOutput))
                 MessageBox.Show(stderrOutput, AppDomain.CurrentDomain.FriendlyName, MessageBoxButtons.OK, MessageBoxIcon.Error);
             if (!string.IsNullOrEmpty(stdoutOutput))
                 MessageBox.Show(stdoutOutput, AppDomain.CurrentDomain.FriendlyName);
-"@ })
+'@ })
 
             // --- Handle -wait option ---
             if (paramWait)
             {
- $(if (!$noConsole) {@"
+ $(if (!$noConsole) {@'
                 Console.WriteLine("Hit any key to exit...");
                 if (!Console.IsInputRedirected) Console.ReadKey();
-"@ } else {@"
+'@ } else {@'
                 MessageBox.Show("Click OK to exit...", System.AppDomain.CurrentDomain.FriendlyName);
-"@ })
+'@ })
             }
 
             return exitCode;
@@ -1801,9 +1833,7 @@ namespace PS2EXE_PS7
     }
 }
 "@
-    }
-    else
-    {
+    } else {
         # ==================================================================
         # ORIGINAL TEMPLATE (in-process PowerShell host for .NET Framework)
         # ==================================================================
@@ -1821,13 +1851,13 @@ using System.Management.Automation.Host;
 using System.Security;
 using System.Reflection;
 using System.Runtime.InteropServices;
- $(if ($noConsole) {@"
+ $(if ($noConsole) {@'
 using System.Windows.Forms;
 using System.Drawing;
-"@ })
- $(if ($winFormsDPIAware) {@"
+'@ })
+ $(if ($winFormsDPIAware) {@'
 using System.Runtime.Versioning;
-"@ })
+'@ })
 
 [assembly:AssemblyTitle("$title")]
 [assembly:AssemblyProduct("$product")]
@@ -1840,13 +1870,13 @@ using System.Runtime.Versioning;
 // not displayed in details tab of properties dialog, but embedded to file
 [assembly:AssemblyDescription("$description")]
 [assembly:AssemblyCompany("$company")]
- $(if ($winFormsDPIAware) {@"
+ $(if ($winFormsDPIAware) {@'
 [assembly:TargetFrameworkAttribute(".NETFramework,Version=v4.7,Profile=Client",FrameworkDisplayName=".NET Framework 4.7")]
-"@ })
+'@ })
 
 namespace ModuleNameSpace
 {
- $(if ($noConsole -or $credentialGUI) {@"
+ $(if ($noConsole -or $credentialGUI) {@'
     internal class Credential_Form
     {
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
@@ -1947,7 +1977,7 @@ namespace ModuleNameSpace
             return null;
         }
     }
-"@ })
+'@ })
 
     internal class MainModuleRawUI : PSHostRawUserInterface
     {
@@ -1955,12 +1985,12 @@ namespace ModuleNameSpace
         // Storage for console colors in GUI mode (read and set but not currently used)
         private ConsoleColor GUIBackgroundColor = ConsoleColor.White;
         private ConsoleColor GUIForegroundColor = ConsoleColor.Black;
- $(if ([STRING]::IsNullOrEmpty($title)){ @"
+ $(if ([STRING]::IsNullOrEmpty($title)){ @'
         private string GUITitle = System.AppDomain.CurrentDomain.FriendlyName;
-"@ } else {@"
+'@ } else {@'
         private string GUITitle = Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyTitleAttribute>().Title;
-"@ })
-"@ } else {@"
+'@ })
+"@ } else {@'
         const int STD_OUTPUT_HANDLE = -11;
 
         // CHAR_INFO struct, which was a union in the old days
@@ -2020,11 +2050,11 @@ namespace ModuleNameSpace
 
         [DllImport("kernel32.dll", SetLastError = true)]
             static extern IntPtr GetStdHandle(int nStdHandle);
-"@ })
+'@ })
 
         public override ConsoleColor BackgroundColor
         {
- $(if (!$noConsole){ @"
+ $(if (!$noConsole){ @'
             get
             {
                 return Console.BackgroundColor;
@@ -2033,7 +2063,7 @@ namespace ModuleNameSpace
             {
                 Console.BackgroundColor = value;
             }
-"@ } else {@"
+'@ } else {@'
             get
             {
                 return GUIBackgroundColor;
@@ -2042,28 +2072,28 @@ namespace ModuleNameSpace
             {
                 GUIBackgroundColor = value;
             }
-"@ })
+'@ })
         }
 
         public override System.Management.Automation.Host.Size BufferSize
         {
             get
             {
- $(if (!$noConsole){ @"
+ $(if (!$noConsole){ @'
                 if (Console.IsOutputRedirected)
                     return new System.Management.Automation.Host.Size(120, 50);
                 else
                     return new System.Management.Automation.Host.Size(Console.BufferWidth, Console.BufferHeight);
-"@ } else {@"
+'@ } else {@'
                 return new System.Management.Automation.Host.Size(120, 50);
-"@ })
+'@ })
             }
             set
             {
- $(if (!$noConsole){ @"
+ $(if (!$noConsole){ @'
                 Console.BufferWidth = value.Width;
                 Console.BufferHeight = value.Height;
-"@ })
+'@ })
             }
         }
 
@@ -2071,18 +2101,18 @@ namespace ModuleNameSpace
         {
             get
             {
- $(if (!$noConsole){ @"
+ $(if (!$noConsole){ @'
                 return new Coordinates(Console.CursorLeft, Console.CursorTop);
-"@ } else {@"
+'@ } else {@'
                 return new Coordinates(0, 0);
-"@ })
+'@ })
             }
             set
             {
- $(if (!$noConsole){ @"
+ $(if (!$noConsole){ @'
                 Console.CursorTop = value.Y;
                 Console.CursorLeft = value.X;
-"@ })
+'@ })
             }
         }
 
@@ -2090,32 +2120,32 @@ namespace ModuleNameSpace
         {
             get
             {
- $(if (!$noConsole){ @"
+ $(if (!$noConsole){ @'
                 return Console.CursorSize;
-"@ } else {@"
+'@ } else {@'
                 return 25;
-"@ })
+'@ })
             }
             set
             {
- $(if (!$noConsole){ @"
+ $(if (!$noConsole){ @'
                 Console.CursorSize = value;
-"@ })
+'@ })
             }
         }
 
- $(if ($noConsole){ @"
+ $(if ($noConsole){ @'
         private Form Invisible_Form = null;
-"@ })
+'@ })
 
         public override void FlushInputBuffer()
         {
- $(if (!$noConsole){ @"
+ $(if (!$noConsole){ @'
             if (!Console.IsInputRedirected)
             {	while (Console.KeyAvailable)
                     Console.ReadKey(true);
             }
-"@ } else {@"
+'@ } else {@'
             if (Invisible_Form != null)
             {
                 Invisible_Form.Close();
@@ -2128,12 +2158,12 @@ namespace ModuleNameSpace
                 Invisible_Form.ShowInTaskbar = false;
                 Invisible_Form.Visible = true;
             }
-"@ })
+'@ })
         }
 
         public override ConsoleColor ForegroundColor
         {
- $(if (!$noConsole){ @"
+ $(if (!$noConsole){ @'
             get
             {
                 return Console.ForegroundColor;
@@ -2142,7 +2172,7 @@ namespace ModuleNameSpace
             {
                 Console.ForegroundColor = value;
             }
-"@ } else {@"
+'@ } else {@'
             get
             {
                 return GUIForegroundColor;
@@ -2151,12 +2181,12 @@ namespace ModuleNameSpace
             {
                 GUIForegroundColor = value;
             }
-"@ })
+'@ })
         }
 
         public override BufferCell[,] GetBufferContents(System.Management.Automation.Host.Rectangle rectangle)
         {
- $(if (!$noConsole) {@"
+ $(if (!$noConsole) {@'
             IntPtr hStdOut = GetStdHandle(STD_OUTPUT_HANDLE);
             CHAR_INFO[,] buffer = new CHAR_INFO[rectangle.Bottom - rectangle.Top + 1, rectangle.Right - rectangle.Left + 1];
             COORD buffer_size = new COORD() {X = (short)(rectangle.Right - rectangle.Left + 1), Y = (short)(rectangle.Bottom - rectangle.Top + 1)};
@@ -2173,7 +2203,7 @@ namespace ModuleNameSpace
                 }
 
             return ScreenBuffer;
-"@ } else {@"
+'@ } else {@'
             System.Management.Automation.Host.BufferCell[,] ScreenBuffer = new System.Management.Automation.Host.BufferCell[rectangle.Bottom - rectangle.Top + 1, rectangle.Right - rectangle.Left + 1];
 
             for (int y = 0; y <= rectangle.Bottom - rectangle.Top; y++)
@@ -2183,18 +2213,18 @@ namespace ModuleNameSpace
                 }
 
             return ScreenBuffer;
-"@ })
+'@ })
         }
 
         public override bool KeyAvailable
         {
             get
             {
- $(if (!$noConsole) {@"
+ $(if (!$noConsole) {@'
                 return Console.KeyAvailable;
-"@ } else {@"
+'@ } else {@'
                 return true;
-"@ })
+'@ })
             }
         }
 
@@ -2202,11 +2232,11 @@ namespace ModuleNameSpace
         {
             get
             {
- $(if (!$noConsole){ @"
+ $(if (!$noConsole){ @'
                 return new System.Management.Automation.Host.Size(Console.LargestWindowWidth, Console.LargestWindowHeight);
-"@ } else {@"
+'@ } else {@'
                 return new System.Management.Automation.Host.Size(240, 84);
-"@ })
+'@ })
             }
         }
 
@@ -2214,20 +2244,20 @@ namespace ModuleNameSpace
         {
             get
             {
- $(if (!$noConsole){ @"
+ $(if (!$noConsole){ @'
                 if (Console.IsOutputRedirected)
                     return new System.Management.Automation.Host.Size(120, 84);
                 else
                     return new System.Management.Automation.Host.Size(Console.BufferWidth, Console.BufferHeight);
-"@ } else {@"
+'@ } else {@'
                 return new System.Management.Automation.Host.Size(120, 84);
-"@ })
+'@ })
             }
         }
 
         public override KeyInfo ReadKey(ReadKeyOptions options)
         {
- $(if (!$noConsole) {@"
+ $(if (!$noConsole) {@'
             ConsoleKeyInfo cki = Console.ReadKey((options & ReadKeyOptions.NoEcho)!=0);
 
             ControlKeyStates cks = 0;
@@ -2243,17 +2273,17 @@ namespace ModuleNameSpace
                 cks |= ControlKeyStates.NumLockOn;
 
             return new KeyInfo((int)cki.Key, cki.KeyChar, cks, (options & ReadKeyOptions.IncludeKeyDown)!=0);
-"@ } else {@"
+'@ } else {@'
             if ((options & ReadKeyOptions.IncludeKeyDown)!=0)
                 return ReadKey_Box.Show(WindowTitle, "", true);
             else
                 return ReadKey_Box.Show(WindowTitle, "", false);
-"@ })
+'@ })
         }
 
         public override void ScrollBufferContents(System.Management.Automation.Host.Rectangle source, Coordinates destination, System.Management.Automation.Host.Rectangle clip, BufferCell fill)
         {
- $(if (!$noConsole) { @"
+ $(if (!$noConsole) { @'
             if ((source.Left > clip.Right) || (source.Right < clip.Left) || (source.Top > clip.Bottom) || (source.Bottom < clip.Top))
             {
                 return;
@@ -2270,24 +2300,24 @@ namespace ModuleNameSpace
             CHAR_INFO lpFill = new CHAR_INFO() { AsciiChar = fill.Character, Attributes = (ushort)((int)(fill.ForegroundColor) + (int)(fill.BackgroundColor)*16) };
 
             ScrollConsoleScreenBuffer(hStdOut, ref lpScrollRectangle, ref lpClipRectangle, dwDestinationOrigin, ref lpFill);
-"@ })
+'@ })
         }
 
         public override void SetBufferContents(System.Management.Automation.Host.Rectangle rectangle, BufferCell fill)
         {
- $(if (!$noConsole){ @"
+ $(if (!$noConsole){ @'
             if (rectangle.Left >= 0)
                 Console.MoveBufferArea(rectangle.Left, rectangle.Top, rectangle.Right-rectangle.Left+1, rectangle.Bottom-rectangle.Top+1, BufferSize.Width, BufferSize.Height, fill.Character, fill.ForegroundColor, fill.BackgroundColor);
             else
             {
                 Console.MoveBufferArea(0, 0, BufferSize.Width, BufferSize.Height, BufferSize.Width, BufferSize.Height, fill.Character, fill.ForegroundColor, fill.BackgroundColor);
             }
-"@ })
+'@ })
         }
 
         public override void SetBufferContents(Coordinates origin, BufferCell[,] contents)
         {
- $(if (!$noConsole) { @"
+ $(if (!$noConsole) { @'
             IntPtr hStdOut = GetStdHandle(STD_OUTPUT_HANDLE);
             CHAR_INFO[,] buffer = new CHAR_INFO[contents.GetLength(0), contents.GetLength(1)];
             COORD buffer_size = new COORD() {X = (short)(contents.GetLength(1)), Y = (short)(contents.GetLength(0))};
@@ -2301,7 +2331,7 @@ namespace ModuleNameSpace
                 }
 
             WriteConsoleOutput(hStdOut, buffer, buffer_size, buffer_index, ref screen_rect);
-"@ })
+'@ })
         }
 
         public override Coordinates WindowPosition
@@ -2309,21 +2339,21 @@ namespace ModuleNameSpace
             get
             {
                 Coordinates s = new Coordinates();
- $(if (!$noConsole){ @"
+ $(if (!$noConsole){ @'
                 s.X = Console.WindowLeft;
                 s.Y = Console.WindowTop;
-"@ } else {@"
+'@ } else {@'
                 s.X = 0;
                 s.Y = 0;
-"@ })
+'@ })
                 return s;
             }
             set
             {
- $(if (!$noConsole){ @"
+ $(if (!$noConsole){ @'
                 Console.WindowLeft = value.X;
                 Console.WindowTop = value.Y;
-"@ })
+'@ })
             }
         }
 
@@ -2332,21 +2362,21 @@ namespace ModuleNameSpace
             get
             {
                 System.Management.Automation.Host.Size s = new System.Management.Automation.Host.Size();
- $(if (!$noConsole){ @"
+ $(if (!$noConsole){ @'
                 s.Height = Console.WindowHeight;
                 s.Width = Console.WindowWidth;
-"@ } else {@"
+'@ } else {@'
                 s.Height = 50;
                 s.Width = 120;
-"@ })
+'@ })
                 return s;
             }
             set
             {
- $(if (!$noConsole){ @"
+ $(if (!$noConsole){ @'
                 Console.WindowWidth = value.Width;
                 Console.WindowHeight = value.Height;
-"@ })
+'@ })
             }
         }
 
@@ -2354,19 +2384,19 @@ namespace ModuleNameSpace
         {
             get
             {
- $(if (!$noConsole){ @"
+ $(if (!$noConsole){ @'
                 return Console.Title;
-"@ } else {@"
+'@ } else {@'
                 return GUITitle;
-"@ })
+'@ })
             }
             set
             {
- $(if (!$noConsole){ @"
+ $(if (!$noConsole){ @'
                 Console.Title = value;
-"@ } else {@"
+'@ } else {@'
                 GUITitle = value;
-"@ })
+'@ })
             }
         }
     }
@@ -2655,12 +2685,12 @@ namespace ModuleNameSpace
         private ConsoleColor ProgressBarColor = ConsoleColor.DarkCyan;
         private string WindowTitle = "";
 
- $(if (!$noVisualStyles) {@"
+ $(if (!$noVisualStyles) {@'
         private System.Timers.Timer timer = new System.Timers.Timer();
         private int barNumber = -1;
         private int barValue = -1;
         private bool inTick = false;
-"@ })
+'@ })
 
         struct Progress_Data
         {
@@ -2736,14 +2766,14 @@ namespace ModuleNameSpace
             this.StartPosition = FormStartPosition.CenterScreen;
 
             this.ResumeLayout();
- $(if (!$noVisualStyles) {@"
+ $(if (!$noVisualStyles) {@'
             timer.Elapsed += new System.Timers.ElapsedEventHandler(TimeTick);
             timer.Interval = 50;
             timer.AutoReset = true;
             timer.Start();
-"@ })
+'@ })
         }
- $(if (!$noVisualStyles) {@"
+ $(if (!$noVisualStyles) {@'
         private void TimeTick(object source, System.Timers.ElapsedEventArgs e)
         {
             if (inTick) return;
@@ -2759,7 +2789,7 @@ namespace ModuleNameSpace
             }
             inTick = false;
         }
-"@ })
+'@ })
 
         private void AddBar(ref Progress_Data pd, int position)
         {
@@ -2782,11 +2812,11 @@ namespace ModuleNameSpace
 
             pd.objProgressBar = new ProgressBar();
             pd.objProgressBar.Value = 0;
- $(if ($noVisualStyles) {@"
+ $(if ($noVisualStyles) {@'
             pd.objProgressBar.Style = ProgressBarStyle.Continuous;
-"@ } else {@"
+'@ } else {@'
             pd.objProgressBar.Style = ProgressBarStyle.Blocks;
-"@ })
+'@ })
             pd.objProgressBar.ForeColor = DrawingColor(ProgressBarColor);
             if (pd.Depth < 15)
             {
@@ -2841,9 +2871,9 @@ namespace ModuleNameSpace
             {
                 if (currentProgress >= 0)
                 {
- $(if (!$noVisualStyles) {@"
+ $(if (!$noVisualStyles) {@'
                     if (barNumber == currentProgress) barNumber = -1;
-"@ })
+'@ })
                     this.Controls.Remove(progressDataList[currentProgress].lbActivity);
                     this.Controls.Remove(progressDataList[currentProgress].lbStatus);
                     this.Controls.Remove(progressDataList[currentProgress].objProgressBar);
@@ -2861,10 +2891,10 @@ namespace ModuleNameSpace
 
                 if (progressDataList.Count == 0)
                 {
- $(if (!$noVisualStyles) {@"
+ $(if (!$noVisualStyles) {@'
                     timer.Stop();
                     timer.Dispose();
-"@ })
+'@ })
                     this.Close();
                     return;
                 }
@@ -2972,7 +3002,7 @@ namespace ModuleNameSpace
 
             if ((objRecord.PercentComplete >= 0) && (objRecord.PercentComplete <= 100))
             {
- $(if (!$noVisualStyles) {@"
+ $(if (!$noVisualStyles) {@'
                 if (objRecord.PercentComplete < 100)
                     progressDataList[currentProgress].objProgressBar.Value = objRecord.PercentComplete + 1;
                 else
@@ -2980,27 +3010,27 @@ namespace ModuleNameSpace
                 progressDataList[currentProgress].objProgressBar.Visible = true;
                 barNumber = currentProgress;
                 barValue = objRecord.PercentComplete;
-"@ } else {@"
+'@ } else {@'
                 progressDataList[currentProgress].objProgressBar.Value = objRecord.PercentComplete;
                 progressDataList[currentProgress].objProgressBar.Visible = true;
-"@ })
+'@ })
             }
             else
             { if (objRecord.PercentComplete > 100)
                 {
                     progressDataList[currentProgress].objProgressBar.Value = 0;
                     progressDataList[currentProgress].objProgressBar.Visible = true;
- $(if (!$noVisualStyles) {@"
+ $(if (!$noVisualStyles) {@'
                     barNumber = currentProgress;
                     barValue = 0;
-"@ })
+'@ })
                 }
                 else
                 {
                     progressDataList[currentProgress].objProgressBar.Visible = false;
- $(if (!$noVisualStyles) {@"
+ $(if (!$noVisualStyles) {@'
                     if (barNumber == currentProgress) barNumber = -1;
-"@ })
+'@ })
                 }
             }
 
@@ -3038,28 +3068,28 @@ namespace ModuleNameSpace
         public ConsoleColor VerboseForegroundColor = ConsoleColor.Yellow;
         public ConsoleColor VerboseBackgroundColor = ConsoleColor.Black;
 
- $(if (!$noConsole) {@"
+ $(if (!$noConsole) {@'
         public ConsoleColor ProgressForegroundColor = ConsoleColor.Yellow;
-"@ } else {@"
+'@ } else {@'
         public ConsoleColor ProgressForegroundColor = ConsoleColor.DarkCyan;
-"@ })
+'@ })
         public ConsoleColor ProgressBackgroundColor = ConsoleColor.DarkCyan;
 
         public MainModuleUI() : base()
         {
             rawUI = new MainModuleRawUI();
- $(if (!$noConsole) {@"
+ $(if (!$noConsole) {@'
             rawUI.ForegroundColor = Console.ForegroundColor;
             rawUI.BackgroundColor = Console.BackgroundColor;
-"@ })
+'@ })
         }
 
         public override Dictionary<string, PSObject> Prompt(string caption, string message, System.Collections.ObjectModel.Collection<FieldDescription> descriptions)
         {
- $(if (!$noConsole) {@"
+ $(if (!$noConsole) {@'
             if (!string.IsNullOrEmpty(caption)) WriteLine(caption);
             if (!string.IsNullOrEmpty(message)) WriteLine(message);
-"@ } else {@"
+'@ } else {@'
             if ((!string.IsNullOrEmpty(caption)) || (!string.IsNullOrEmpty(message)))
             { string sTitel = System.AppDomain.CurrentDomain.FriendlyName, sMeldung = "";
 
@@ -3069,7 +3099,7 @@ namespace ModuleNameSpace
             }
 
             ib_message = "";
-"@ })
+'@ })
             Dictionary<string, PSObject> ret = new Dictionary<string, PSObject>();
             foreach (FieldDescription cd in descriptions)
             {
@@ -3093,11 +3123,11 @@ namespace ModuleNameSpace
                     {
                         try
                         {
- $(if (!$noConsole) {@"
+ $(if (!$noConsole) {@'
                             if (!string.IsNullOrEmpty(cd.Name)) Write(string.Format("{0}[{1}]: ", cd.Name, index));
-"@ } else {@"
+'@ } else {@'
                             if (!string.IsNullOrEmpty(cd.Name)) ib_message = string.Format("{0}[{1}]: ", cd.Name, index);
-"@ })
+'@ })
                             data = ReadLine();
                             if (string.IsNullOrEmpty(data))
                                 break;
@@ -3125,14 +3155,14 @@ namespace ModuleNameSpace
                         {
                             if (t != typeof(System.Management.Automation.PSCredential))
                             {
- $(if (!$noConsole) {@"
+ $(if (!$noConsole) {@'
                                 if (!string.IsNullOrEmpty(cd.Name)) Write(cd.Name);
                                 if (!string.IsNullOrEmpty(cd.HelpMessage)) Write(" (Type !? for help.)");
                                 if ((!string.IsNullOrEmpty(cd.Name)) || (!string.IsNullOrEmpty(cd.HelpMessage))) Write(": ");
-"@ } else {@"
+'@ } else {@'
                                 if (!string.IsNullOrEmpty(cd.Name)) ib_message = string.Format("{0}: ", cd.Name);
                                 if (!string.IsNullOrEmpty(cd.HelpMessage)) ib_message += "\n(Type !? for help.)";
-"@ })
+'@ })
                                 do {
                                     l = ReadLine();
                                     if (l == "!?")
@@ -3161,11 +3191,11 @@ namespace ModuleNameSpace
                         }
                         else
                         {
- $(if (!$noConsole) {@"
+ $(if (!$noConsole) {@'
                                 if (!string.IsNullOrEmpty(cd.Name)) Write(string.Format("{0}: ", cd.Name));
-"@ } else {@"
+'@ } else {@'
                                 if (!string.IsNullOrEmpty(cd.Name)) ib_message = string.Format("{0}: ", cd.Name);
-"@ })
+'@ })
 
                             SecureString pwd = null;
                             pwd = ReadLineAsSecureString();
@@ -3180,19 +3210,19 @@ namespace ModuleNameSpace
                     }
                 }
             }
- $(if ($noConsole) {@"
+ $(if ($noConsole) {@'
             ib_message = "";
-"@ })
+'@ })
             return ret;
         }
 
         public override int PromptForChoice(string caption, string message, System.Collections.ObjectModel.Collection<ChoiceDescription> choices, int defaultChoice)
         {
- $(if ($noConsole) {@"
+ $(if ($noConsole) {@'
             int iReturn = Choice_Box.Show(choices, defaultChoice, caption, message);
             if (iReturn == -1) { iReturn = defaultChoice; }
             return iReturn;
-"@ } else {@"
+'@ } else {@'
             if (!string.IsNullOrEmpty(caption)) WriteLine(caption);
             WriteLine(message);
             do {
@@ -3247,12 +3277,12 @@ namespace ModuleNameSpace
                     }
                 }
             } while (true);
-"@ })
+'@ })
         }
 
         public override PSCredential PromptForCredential(string caption, string message, string userName, string targetName, PSCredentialTypes allowedCredentialTypes, PSCredentialUIOptions options)
         {
- $(if (!$noConsole -and !$credentialGUI) {@"
+ $(if (!$noConsole -and !$credentialGUI) {@'
             if (!string.IsNullOrEmpty(caption)) WriteLine(caption);
             WriteLine(message);
 
@@ -3282,7 +3312,7 @@ namespace ModuleNameSpace
 
             PSCredential c2 = new PSCredential(un, pwd);
             return c2;
-"@ } else {@"
+'@ } else {@'
             Credential_Form.User_Pwd cred = Credential_Form.PromptForPassword(caption, message, targetName, userName, allowedCredentialTypes, options);
             if (cred != null)
             {
@@ -3293,12 +3323,12 @@ namespace ModuleNameSpace
                 return new PSCredential(cred.User, x);
             }
             return null;
-"@ })
+'@ })
         }
 
         public override PSCredential PromptForCredential(string caption, string message, string userName, string targetName)
         {
- $(if (!$noConsole -and !$credentialGUI) {@"
+ $(if (!$noConsole -and !$credentialGUI) {@'
             if (!string.IsNullOrEmpty(caption)) WriteLine(caption);
             WriteLine(message);
 
@@ -3328,7 +3358,7 @@ namespace ModuleNameSpace
 
             PSCredential c2 = new PSCredential(un, pwd);
             return c2;
-"@ } else {@"
+'@ } else {@'
             Credential_Form.User_Pwd cred = Credential_Form.PromptForPassword(caption, message, targetName, userName, PSCredentialTypes.Default, PSCredentialUIOptions.Default);
             if (cred != null)
             {
@@ -3339,7 +3369,7 @@ namespace ModuleNameSpace
                 return new PSCredential(cred.User, x);
             }
             return null;
-"@ })
+'@ })
         }
 
         public override PSHostRawUserInterface RawUI
@@ -3350,26 +3380,26 @@ namespace ModuleNameSpace
             }
         }
 
- $(if ($noConsole) {@"
+ $(if ($noConsole) {@'
         private string ib_message;
-"@ })
+'@ })
 
         public override string ReadLine()
         {
- $(if (!$noConsole) {@"
+ $(if (!$noConsole) {@'
             return Console.ReadLine();
-"@ } else {@"
+'@ } else {@'
             string sWert = "";
             if (Input_Box.Show(rawUI.WindowTitle, ib_message, ref sWert) == DialogResult.OK)
                 return sWert;
             else
-"@ })
- $(if ($noConsole) { if ($exitOnCancel) {@"
+'@ })
+ $(if ($noConsole) { if ($exitOnCancel) {@'
                 Environment.Exit(1);
             return "";
-"@ } else {@"
+'@ } else {@'
                 return "";
-"@ } })
+'@ } })
         }
 
         private System.Security.SecureString getPassword()
@@ -3403,94 +3433,94 @@ namespace ModuleNameSpace
         public override System.Security.SecureString ReadLineAsSecureString()
         {
             System.Security.SecureString secstr = new System.Security.SecureString();
- $(if (!$noConsole) {@"
+ $(if (!$noConsole) {@'
             secstr = getPassword();
-"@ } else {@"
+'@ } else {@'
             string sWert = "";
             if (Input_Box.Show(rawUI.WindowTitle, ib_message, ref sWert, true) == DialogResult.OK)
             {
                 foreach (char ch in sWert)
                     secstr.AppendChar(ch);
             }
-"@ })
- $(if ($noConsole) { if ($exitOnCancel) {@"
+'@ })
+ $(if ($noConsole) { if ($exitOnCancel) {@'
             else
                 Environment.Exit(1);
-"@ } })
+'@ } })
             return secstr;
         }
 
         public override void Write(ConsoleColor foregroundColor, ConsoleColor backgroundColor, string value)
         {
- $(if (!$noOutput) { if (!$noConsole) {@"
+ $(if (!$noOutput) { if (!$noConsole) {@'
             ConsoleColor fgc = Console.ForegroundColor, bgc = Console.BackgroundColor;
             Console.ForegroundColor = foregroundColor;
             Console.BackgroundColor = backgroundColor;
             Console.Write(value);
             Console.ForegroundColor = fgc;
             Console.BackgroundColor = bgc;
-"@ } else {@"
+'@ } else {@'
             if ((!string.IsNullOrEmpty(value)) && (value != "\n"))
                 MessageBox.Show(value, rawUI.WindowTitle);
-"@ } })
+'@ } })
         }
 
         public override void Write(string value)
         {
- $(if (!$noOutput) { if (!$noConsole) {@"
+ $(if (!$noOutput) { if (!$noConsole) {@'
             Console.Write(value);
-"@ } else {@"
+'@ } else {@'
             if ((!string.IsNullOrEmpty(value)) && (value != "\n"))
                 MessageBox.Show(value, rawUI.WindowTitle);
-"@ } })
+'@ } })
         }
 
         public override void WriteDebugLine(string message)
         {
- $(if (!$noError) { if (!$noConsole) {@"
+ $(if (!$noError) { if (!$noConsole) {@'
             WriteLineInternal(DebugForegroundColor, DebugBackgroundColor, string.Format("DEBUG: {0}", message));
-"@ } else {@"
+'@ } else {@'
             MessageBox.Show(message, rawUI.WindowTitle, MessageBoxButtons.OK, MessageBoxIcon.Information);
-"@ } })
+'@ } })
         }
 
         public override void WriteErrorLine(string value)
         {
- $(if (!$noError) { if (!$noConsole) {@"
+ $(if (!$noError) { if (!$noConsole) {@'
             if (Console.IsErrorRedirected)
                 Console.Error.WriteLine(string.Format("ERROR: {0}", value));
             else
                 WriteLineInternal(ErrorForegroundColor, ErrorBackgroundColor, string.Format("ERROR: {0}", value));
-"@ } else {@"
+'@ } else {@'
             MessageBox.Show(value, rawUI.WindowTitle, MessageBoxButtons.OK, MessageBoxIcon.Error);
-"@ } })
+'@ } })
         }
 
         public override void WriteLine()
         {
- $(if (!$noOutput) { if (!$noConsole) {@"
+ $(if (!$noOutput) { if (!$noConsole) {@'
             Console.WriteLine();
-"@ } else {@"
+'@ } else {@'
             MessageBox.Show("", rawUI.WindowTitle);
-"@ } })
+'@ } })
         }
 
         public override void WriteLine(ConsoleColor foregroundColor, ConsoleColor backgroundColor, string value)
         {
- $(if (!$noOutput) { if (!$noConsole) {@"
+ $(if (!$noOutput) { if (!$noConsole) {@'
             ConsoleColor fgc = Console.ForegroundColor, bgc = Console.BackgroundColor;
             Console.ForegroundColor = foregroundColor;
             Console.BackgroundColor = backgroundColor;
             Console.WriteLine(value);
             Console.ForegroundColor = fgc;
             Console.BackgroundColor = bgc;
-"@ } else {@"
+'@ } else {@'
             if ((!string.IsNullOrEmpty(value)) && (value != "\n"))
                 MessageBox.Show(value, rawUI.WindowTitle);
-"@ } })
+'@ } })
         }
 
- $(if (!$noError -And !$noConsole) {@"
+ $(if (!$noError -And !$noConsole) {@'
         private void WriteLineInternal(ConsoleColor foregroundColor, ConsoleColor backgroundColor, string value)
         {
             ConsoleColor fgc = Console.ForegroundColor, bgc = Console.BackgroundColor;
@@ -3500,24 +3530,24 @@ namespace ModuleNameSpace
             Console.ForegroundColor = fgc;
             Console.BackgroundColor = bgc;
         }
-"@ })
+'@ })
 
         public override void WriteLine(string value)
         {
- $(if (!$noOutput) { if (!$noConsole) {@"
+ $(if (!$noOutput) { if (!$noConsole) {@'
             Console.WriteLine(value);
-"@ } else {@"
+'@ } else {@'
             if ((!string.IsNullOrEmpty(value)) && (value != "\n"))
                 MessageBox.Show(value, rawUI.WindowTitle);
-"@ } })
+'@ } })
         }
 
- $(if ($noConsole) {@"
+ $(if ($noConsole) {@'
         public Progress_Form pf = null;
-"@ })
+'@ })
         public override void WriteProgress(long sourceId, ProgressRecord record)
         {
- $(if ($noConsole) {@"
+ $(if ($noConsole) {@'
             if (pf == null)
             {
                 if (record.RecordType == ProgressRecordType.Completed) return;
@@ -3529,25 +3559,25 @@ namespace ModuleNameSpace
             {
                 if (pf.GetCount() == 0) pf = null;
             }
-"@ })
+'@ })
         }
 
         public override void WriteVerboseLine(string message)
         {
- $(if (!$noOutput) { if (!$noConsole) {@"
+ $(if (!$noOutput) { if (!$noConsole) {@'
             WriteLine(VerboseForegroundColor, VerboseBackgroundColor, string.Format("VERBOSE: {0}", message));
-"@ } else {@"
+'@ } else {@'
             MessageBox.Show(message, rawUI.WindowTitle, MessageBoxButtons.OK, MessageBoxIcon.Information);
-"@ } })
+'@ } })
         }
 
         public override void WriteWarningLine(string message)
         {
- $(if (!$noError) { if (!$noConsole) {@"
+ $(if (!$noError) { if (!$noConsole) {@'
             WriteLineInternal(WarningForegroundColor, WarningBackgroundColor, string.Format("WARNING: {0}", message));
-"@ } else {@"
+'@ } else {@'
             MessageBox.Show(message, rawUI.WindowTitle, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-"@ } })
+'@ } })
         }
     }
 
@@ -3767,15 +3797,15 @@ namespace ModuleNameSpace
             set { this.exitCode = value; }
         }
 
- $(if ($conHost) {@"
+ $(if ($conHost) {@'
         [DllImport("kernel32.dll", SetLastError = true)][return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool AllocConsole();
-"@ })
+'@ })
 
-        $(if ($STA){"[STAThread]"})$(if ($MTA){"[MTAThread]"})
+        $(if ($STA){'[STAThread]'})$(if ($MTA){'[MTAThread]'})
         private static int Main(string[] args)
         {
- $(if ($conHost) {@"
+ $(if ($conHost) {@'
             // before this command no console should be attached or allocation fails
             if (!AllocConsole()) { Console.Error.WriteLine("Creation of console failed!"); }
 
@@ -3788,13 +3818,13 @@ namespace ModuleNameSpace
             System.IO.StreamWriter errorWriter = new System.IO.StreamWriter(Console.OpenStandardOutput());
             errorWriter.AutoFlush = true;
             Console.SetError(errorWriter);
-"@ })
- $(if (!$noConsole -and $UNICODEEncoding) {@"
+'@ })
+ $(if (!$noConsole -and $UNICODEEncoding) {@'
             Console.OutputEncoding = new System.Text.UnicodeEncoding();
-"@ })
+'@ })
             $culture
 
-            $(if (!$noVisualStyles -and $noConsole) { "Application.EnableVisualStyles();" })
+            $(if (!$noVisualStyles -and $noConsole) { 'Application.EnableVisualStyles();' })
             MainApp me = new MainApp();
 
             bool paramWait = false;
@@ -3810,7 +3840,7 @@ namespace ModuleNameSpace
             {
                 using (Runspace myRunSpace = RunspaceFactory.CreateRunspace(host))
                 {
-                    $(if ($STA -or $MTA) {"myRunSpace.ApartmentState = System.Threading.ApartmentState."})$(if ($STA){"STA"})$(if ($MTA){"MTA"});
+                    $(if ($STA -or $MTA) {'myRunSpace.ApartmentState = System.Threading.ApartmentState.'})$(if ($STA){'STA'})$(if ($MTA){'MTA'});
                     myRunSpace.Open();
 
                     // Add $ ScriptRoot pointing to the EXE directory and preset the path
@@ -3826,7 +3856,7 @@ namespace ModuleNameSpace
 
                     using (PowerShell posh = PowerShell.Create())
                     {
- $(if (!$noConsole) {@"
+ $(if (!$noConsole) {@'
                         Console.CancelKeyPress += new ConsoleCancelEventHandler(delegate(object sender, ConsoleCancelEventArgs e)
                         {
                             try
@@ -3841,7 +3871,7 @@ namespace ModuleNameSpace
                             {
                             };
                         });
-"@ })
+'@ })
 
                         posh.Runspace = myRunSpace;
                         posh.Streams.Error.DataAdded += new EventHandler<DataAddedEventArgs>(delegate(object sender, DataAddedEventArgs e)
@@ -3879,11 +3909,11 @@ namespace ModuleNameSpace
                                 string[] s1 = s.Split(new string[] { ":" }, 2, StringSplitOptions.RemoveEmptyEntries);
                                 if (s1.Length != 2)
                                 {
- $(if (!$noConsole) {@"
+ $(if (!$noConsole) {@'
                                     Console.WriteLine("If you specify the -extract option you need to add a file for extraction in this way\r\n   -extract:\"<filename>\"");
-"@ } else {@"
+'@ } else {@'
                                     MessageBox.Show("If you specify the -extract option you need to add a file for extraction in this way\r\n   -extract:\"<filename>\"", System.AppDomain.CurrentDomain.FriendlyName, MessageBoxButtons.OK, MessageBoxIcon.Error);
-"@ })
+'@ })
                                     return 1;
                                 }
                                 extractFN = s1[1].Trim(new char[] { '\"' });
@@ -4022,22 +4052,22 @@ namespace ModuleNameSpace
             }
             catch (Exception ex)
             {
- $(if (!$noError) { if (!$noConsole) {@"
+ $(if (!$noError) { if (!$noConsole) {@'
                 Console.Write("An exception occured: ");
                 Console.WriteLine(ex.Message);
-"@ } else {@"
+'@ } else {@'
                 MessageBox.Show("An exception occured: " + ex.Message, System.AppDomain.CurrentDomain.FriendlyName, MessageBoxButtons.OK, MessageBoxIcon.Error);
-"@ } })
+'@ } })
             }
 
             if (paramWait)
             {
- $(if (!$noConsole) {@"
+ $(if (!$noConsole) {@'
                 Console.WriteLine("Hit any key to exit...");
                 if (!Console.IsInputRedirected) Console.ReadKey();
-"@ } else {@"
+'@ } else {@'
                 MessageBox.Show("Click OK to exit...", System.AppDomain.CurrentDomain.FriendlyName);
-"@ })
+'@ })
             }
             return me.ExitCode;
         }
@@ -4054,29 +4084,21 @@ namespace ModuleNameSpace
     # ==================================================================
     # Config file: skip for PS7 mode (no .NET Framework runtime config needed)
     # ==================================================================
-    if (!$ps7)
-    {
-        if ($winFormsDPIAware)
-        {
+    if (!$ps7) {
+        if ($winFormsDPIAware) {
             $configFileForEXE3 = "<?xml version=""1.0"" encoding=""utf-8"" ?>`r`n<configuration><startup><supportedRuntime version=""v4.0"" sku="".NETFramework,Version=v4.7"" /></startup>"
-        }
-        else
-        {
+        } else {
             $configFileForEXE3 = "<?xml version=""1.0"" encoding=""utf-8"" ?>`r`n<configuration><startup><supportedRuntime version=""v4.0"" sku="".NETFramework,Version=v4.0"" /></startup>"
         }
-        if ($longPaths)
-        {
-            $configFileForEXE3 += "<runtime><AppContextSwitchOverrides value=""Switch.System.IO.UseLegacyPathHandling=false;Switch.System.IO.BlockLongPaths=false"" /></runtime>"
+        if ($longPaths) {
+            $configFileForEXE3 += '<runtime><AppContextSwitchOverrides value="Switch.System.IO.UseLegacyPathHandling=false;Switch.System.IO.BlockLongPaths=false" /></runtime>'
         }
-        if ($winFormsDPIAware)
-        {
-            $configFileForEXE3 += "<System.Windows.Forms.ApplicationConfigurationSection><add key=""DpiAwareness"" value=""PerMonitorV2"" /></System.Windows.Forms.ApplicationConfigurationSection>"
+        if ($winFormsDPIAware) {
+            $configFileForEXE3 += '<System.Windows.Forms.ApplicationConfigurationSection><add key="DpiAwareness" value="PerMonitorV2" /></System.Windows.Forms.ApplicationConfigurationSection>'
         }
-        $configFileForEXE3 += "</configuration>"
-    }
-    else
-    {
-        $configFileForEXE3 = ""
+        $configFileForEXE3 += '</configuration>'
+    } else {
+        $configFileForEXE3 = ''
     }
 
     Write-Output "Compiling file...`n"
@@ -4086,63 +4108,49 @@ namespace ModuleNameSpace
     Remove-Item -LiteralPath $embeddedScriptFile -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $embedDir -Force -Recurse -ErrorAction SilentlyContinue
 
-    if ($cr.Errors.HasErrors)
-    {
-        if (Test-Path -LiteralPath $outputFile)
-        {
+    if ($cr.Errors.HasErrors) {
+        if (Test-Path -LiteralPath $outputFile) {
             Remove-Item -LiteralPath $outputFile -Verbose:$FALSE
         }
-        Write-Error -ErrorAction Continue "Could not create the PowerShell .exe file because of compilation errors. Use -verbose parameter to see details."
+        Write-Error -ErrorAction Continue 'Could not create the PowerShell .exe file because of compilation errors. Use -verbose parameter to see details.'
         $cr.Errors | ForEach-Object { Write-Verbose $_ }
-    }
-    else
-    {
-        if (Test-Path -LiteralPath $outputFile)
-        {
+    } else {
+        if (Test-Path -LiteralPath $outputFile) {
             Write-Output "Output file $outputFile written"
 
             # inherit the reference timestamps (source file, or the newest of all
             # merged files with -mergeIncludes); failures downgrade to a warning,
             # the executable itself is unaffected
-            if ($null -ne $refCreationTime -and $null -ne $refLastWriteTime)
-            {
-                try
-                {
+            if ($null -ne $refCreationTime -and $null -ne $refLastWriteTime) {
+                try {
                     $outItem = Get-Item -LiteralPath $outputFile
                     $outItem.LastWriteTime = $refLastWriteTime
                     $outItem.CreationTime = $refCreationTime
-                }
-                catch
-                {
+                } catch {
                     Write-Warning "Could not set file times on '$outputFile': $($_.Exception.Message)"
                 }
             }
 
-            if ($prepareDebug)
-            {
-                $cr.TempFiles | Where-Object { $_ -ilike "*.cs" } | Select-Object -First 1 | ForEach-Object {
-                    $dstSrc = ([System.IO.Path]::Combine([System.IO.Path]::GetDirectoryName($outputFile), [System.IO.Path]::GetFileNameWithoutExtension($outputFile)+".cs"))
+            if ($prepareDebug) {
+                $cr.TempFiles | Where-Object { $_ -ilike '*.cs' } | Select-Object -First 1 | ForEach-Object {
+                    $dstSrc = ([System.IO.Path]::Combine([System.IO.Path]::GetDirectoryName($outputFile), [System.IO.Path]::GetFileNameWithoutExtension($outputFile) + '.cs'))
                     Write-Output "Source file name for debug copied: $($dstSrc)"
                     Copy-Item -Path $_ -Destination $dstSrc -Force
                 }
                 $cr.TempFiles | Remove-Item -Verbose:$FALSE -Force -ErrorAction SilentlyContinue
             }
-            if ($CFGFILE -and ![STRING]::IsNullOrEmpty($configFileForEXE3))
-            {
-                $configFileForEXE3 | Set-Content ($outputFile+".config") -Encoding UTF8
-                Write-Output "Config file for EXE created"
+            if ($CFGFILE -and ![STRING]::IsNullOrEmpty($configFileForEXE3)) {
+                $configFileForEXE3 | Set-Content ($outputFile + '.config') -Encoding UTF8
+                Write-Output 'Config file for EXE created'
             }
-        }
-        else
-        {
-            Write-Error -ErrorAction "Continue" "Output file $outputFile not written"
+        } else {
+            Write-Error -ErrorAction 'Continue' "Output file $outputFile not written"
         }
     }
 
-    if ($requireAdmin -or $DPIAware -or $supportOS -or $longPaths)
-    { if (Test-Path -LiteralPath $($outputFile+".win32manifest"))
-        {
-            Remove-Item -LiteralPath $($outputFile+".win32manifest") -Verbose:$FALSE
+    if ($requireAdmin -or $DPIAware -or $supportOS -or $longPaths) {
+        if (Test-Path -LiteralPath $($outputFile + '.win32manifest')) {
+            Remove-Item -LiteralPath $($outputFile + '.win32manifest') -Verbose:$FALSE
         }
     }
 }

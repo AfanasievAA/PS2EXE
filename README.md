@@ -6,7 +6,7 @@ Module version.
 Original Authors: Ingo Karstein, Markus Scholtes. You find the original script based version here (https://github.com/MScholtes/TechNet-Gallery).
 Fork Author: Andrew Afanasiev
 
-Version: 1.0.20
+Version: 1.0.21
 (PowerShell 7+ support, include merging, comment stripping and preprocessed script saving)
 
 Date: 2026.10.08
@@ -245,6 +245,8 @@ $Host.UI.RawUI.FlushInputBuffer()
 ```
 
 ## Changes:
+### 1.0.21 / 2026-10-15
++ PS7 mode: the compile-time syntax check now parses the script with the PowerShell 7 parser by delegating to a local pwsh.exe, so the check matches the runtime that will execute the script. 
 ### 1.0.20 / 2026-10-08
 - new parameter -removeAllComments: strips all # line comments, <# #> block comments and #region/#endregion markers from the input script before embedding (here-string bodies kept verbatim, #requires directives preserved); scripts extracted with -extract will not match the original input file when preprocessing is active; comment-based help blocks are stripped as well, so -? of the compiled executable shows no help text with preprocessing active
 - new parameter -mergeIncludes: recursively inlines every dot-sourced, call-operator (&) or Import-Module file reference into one self-contained script before embedding; include paths are resolved relative to the including file first, then to the folder of the input file, then to the project root (nearest parent folder containing a "source" sub-folder); a .psd1 manifest is redirected to its sibling .psm1/.ps1 module file; param blocks of included files are converted to explicit parameter assignments at every inclusion point (switch parameters never bind positional arguments), all #requires lines are merged into one consolidated header, "using namespace" lines of included files are hoisted into it while other using forms and Export-ModuleMember calls are dropped with a warning; implies -removeAllComments; merge failures are reported via Write-Error and abort compilation; note that $PSScriptRoot, $PSCommandPath and $ScriptRoot inside included code (including param block defaults) resolve to the executable location after merging
