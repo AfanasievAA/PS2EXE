@@ -36,10 +36,6 @@ Powershell script to convert to executable (file has to be UTF8 or UTF16 encoded
 destination executable file name or folder, defaults to inputFile with extension '.exe'
 .PARAMETER prepareDebug
 create helpful information for debugging of generated executable. See parameter -debug there
-.PARAMETER x86
-compile for 32-bit runtime only
-.PARAMETER x64
-compile for 64-bit runtime only
 .PARAMETER lcid
 location ID for the compiled executable. Current user culture if not specified
 .PARAMETER STA
@@ -56,9 +52,6 @@ You might want to pipe your output to Out-String to prevent a message box for ev
 force start with conhost as console instead of Windows Terminal. If necessary a new console window
 will appear.
 Important: Disables redirection of input, output or error channel!
-Not applicable with -ps7.
-.PARAMETER UNICODEEncoding
-encode output as UNICODE in console mode, useful to display special encoded chars
 Not applicable with -ps7.
 .PARAMETER credentialGUI
 use GUI for prompting credentials in console mode instead of console input
@@ -94,8 +87,6 @@ compatibility parameter
 the resulting executable will generate no standard output (includes verbose and information channel)
 .PARAMETER noError
 the resulting executable will generate no error output (includes warning and debug channel)
-.PARAMETER noVisualStyles
-disable visual styles for a generated windows GUI application. Only applicable with parameter -noConsole
 .PARAMETER exitOnCancel
 exits program when Cancel or "X" is selected in a Read-Host input box. Only applicable with parameter -noConsole
 .PARAMETER DPIAware
@@ -115,8 +106,30 @@ generate an executable that runs the embedded script via pwsh.exe (PowerShell 7+
 PowerShell 7+ must be installed on the target machine.
 In console mode: pwsh.exe inherits the console for interactive input/output.
 In GUI mode (-noConsole): output is captured and shown in message boxes.
-Note: -conHost, -credentialGUI, -UNICODEEncoding, -noOutput, -noError, -exitOnCancel,
+Note: -conHost, -credentialGUI, -noOutput, -noError, -exitOnCancel,
 -configFile, -winFormsDPIAware and -STA/-MTA are not applicable with -ps7 and are ignored.
+.PARAMETER core
+compile the script to a native .NET executable using the dotnet CLI (Roslyn compilation)
+instead of embedding it in a .NET Framework stub. Requires the .NET SDK to be installed
+on the build machine. Produces a framework-dependent Windows x64 executable; the target
+machine needs the matching .NET Runtime. Note: -ps7 and -core are mutually exclusive;
+if both are specified, -core takes precedence and -ps7 is ignored with a warning.
+The reserved parameters -?, -debug, -extract, -wait and -end are not evaluated by Core
+mode executables and are passed to the script as plain arguments; -noConsole,
+-credentialGUI, -noOutput, -noError, -exitOnCancel, -lcid, -configFile,
+-winFormsDPIAware, -prepareDebug and -embedFiles are not applicable in Core mode
+and are ignored with a warning.
+.PARAMETER targetFramework
+target .NET framework version for Core mode: net6.0, net7.0, net8.0, net9.0, net10.0 or net11.0.
+If not specified, the latest supported version for the installed .NET SDK is used automatically.
+Only applicable with -core.
+.PARAMETER publishSingleFile
+publish the Core mode executable as a single self-contained file (default: enabled).
+All managed DLLs are bundled into one exe. Use -publishSingleFile:$false to disable and
+get a folder with the executable and its dependencies instead. Only applicable with -core.
+.PARAMETER readyToRun
+pre-compile Core mode assemblies to ReadyToRun (R2R) format for faster startup.
+Trades slightly larger file size for improved launch performance. Only applicable with -core.
 .PARAMETER removeAllComments
 strip all comments (# line, < # # > block, #region/#endregion) from the input script before
 embedding, here-string bodies are kept verbatim, # requires directives are preserved.
@@ -152,8 +165,8 @@ Compiles C:\Data\MyScript.ps1 to C:\Data\MyScript7.exe as graphical executable t
 Win-PS2EXE
 Start graphical front end to Invoke-ps2exe
 .NOTES
-Version: 1.0.21
-Date: 2026.10.15
+Version: 1.0.22
+Date: 2026.10.19
 Author: Andrew Afanasiev
 Original Authors: Ingo Karstein, Markus Scholtes
 .LINK
@@ -161,6 +174,20 @@ https://github.com/AfanasievAA/PS2EXE
 Original file at https://github.com/MScholtes/PS2EXE
 .CHANGELOG 
 ============================================
+[CHG]   New parameter -core: compiles to a native .NET executable using Roslyn compilation
+         (dotnet publish) instead of embedding the script in a .NET Framework stub.
+         Requires the .NET SDK on the build machine, the matching .NET Runtime on the
+         target machine. Framework-dependent, Windows x64 only.
+[CHG]   New parameter -targetFramework: target .NET framework version for Core mode (net6.0
+         through net11.0). Auto-detected from the installed .NET SDK when omitted.
+[CHG]   New parameter -publishSingleFile: publish the Core mode executable as a single file 
+        (default: enabled). Use -publishSingleFile:$false for a folder with dependencies.
+[CHG]   New parameter -readyToRun: pre-compile Core mode assemblies to ReadyToRun (R2R) format
+         for faster startup at the cost of ~2x file size.
+[CHG]    Removed support for the -virtualize, -x86, -noVisualStyles and
+         -UNICODEEncoding parameters. The executable is now always compiled
+         for the 64-bit runtime (x64), visual styles are always enabled for
+         GUI applications and the console output encoding is not modified.
 [FIX]    Invoke-ps2exe: sessions with inherited environment (runas, scheduled
          tasks, remote execution) could have TEMP/TMP point to another user's
          temp dir, causing "Access denied" on all intermediate files. Now the
@@ -248,30 +275,122 @@ Original file at https://github.com/MScholtes/PS2EXE
          or using statements stay parseable.
 
 [NEW]    Incompatible parameter warnings: -conHost, -credentialGUI,
-         -UNICODEEncoding, -noOutput, -noError, -exitOnCancel, -configFile,
+         -noOutput, -noError, -exitOnCancel, -configFile,
          -winFormsDPIAware and -STA/-MTA are ignored when -ps7 is specified.
          A warning is emitted for each ignored parameter.
 #>
+<################################################################################>
+<##                                                                            ##>
+<##      PS2EXE-GUI v1.0.22                                                    ##>
+<##      Rewritten by:  Andrew Afanasiev				                       ##>
+<##                                                                            ##>
+<##      This script is released under Microsoft Public Licence                ##>
+<##          that can be downloaded here:                                      ##>
+<##          http://www.microsoft.com/opensource/licenses.mspx#Ms-PL           ##>
+<##                                                                            ##>
+<################################################################################>
+
+function Get-CoreLatestTargetFramework {
+    param([string]$DotnetVersion)
+    # Map .NET SDK version to the latest supported target framework for PS2EXE
+    $version = [version]$DotnetVersion
+    switch ($version.Major) {
+        6 { return 'net6.0' }
+        7 { return 'net7.0' }
+        8 { return 'net8.0' }
+        9 { return 'net9.0' }
+        10 { return 'net10.0' }
+        11 { return 'net11.0' }
+        default { return $null }
+    }
+}
+
+function Remove-CoreEmptyPlaceholders {
+    param([string]$Content)
+    # Remove any unfilled {{...}} placeholders from templates
+    return [regex]::Replace($Content, '\{\{[^}]+\}\}', '')
+}
 function Invoke-ps2exe {
     [CmdletBinding()]
-    param([STRING]$inputFile = $NULL, [STRING]$outputFile = $NULL, [SWITCH]$prepareDebug, [SWITCH]$x86, [SWITCH]$x64, [int]$lcid,
-        [SWITCH]$STA, [SWITCH]$MTA, [SWITCH]$nested, [SWITCH]$noConsole, [SWITCH]$conHost, [SWITCH]$UNICODEEncoding, [SWITCH]$credentialGUI,
+    param([STRING]$inputFile = $NULL, [STRING]$outputFile = $NULL, [SWITCH]$prepareDebug, [SWITCH]$x64, [int]$lcid,
+        [SWITCH]$STA, [SWITCH]$MTA, [SWITCH]$nested, [SWITCH]$noConsole, [SWITCH]$conHost, [SWITCH]$credentialGUI,
         [STRING]$iconFile = $NULL, $embedFiles = @{}, [STRING]$title, [STRING]$description, [STRING]$company, [STRING]$product, [STRING]$copyright, [STRING]$trademark,
-        [STRING]$version, [SWITCH]$configFile, [SWITCH]$noConfigFile, [SWITCH]$noOutput, [SWITCH]$noError, [SWITCH]$noVisualStyles, [SWITCH]$exitOnCancel,
-        [SWITCH]$DPIAware, [SWITCH]$winFormsDPIAware, [SWITCH]$requireAdmin, [SWITCH]$supportOS, [SWITCH]$virtualize, [SWITCH]$longPaths,
-        [SWITCH]$ps7, [SWITCH]$removeAllComments, [SWITCH]$mergeIncludes, [SWITCH]$savePreprocessedScript)
+        [STRING]$version, [SWITCH]$configFile, [SWITCH]$noConfigFile, [SWITCH]$noOutput, [SWITCH]$noError, [SWITCH]$exitOnCancel,
+        [SWITCH]$DPIAware, [SWITCH]$winFormsDPIAware, [SWITCH]$requireAdmin, [SWITCH]$supportOS, [SWITCH]$longPaths,
+        [SWITCH]$ps7, [SWITCH]$removeAllComments, [SWITCH]$mergeIncludes, [SWITCH]$savePreprocessedScript,
+        [SWITCH]$core, [ValidateSet('net6.0', 'net7.0', 'net8.0', 'net9.0', 'net10.0', 'net11.0')][string]$targetFramework,
+        [SWITCH]$publishSingleFile, [SWITCH]$readyToRun)
 
-    <################################################################################>
-    <##                                                                            ##>
-    <##      PS2EXE-GUI v1.0.21                                                    ##>
-    <##      Rewritten by:  Andrew Afanasiev				                       ##>
-    <##                                                                            ##>
-    <##      This script is released under Microsoft Public Licence                ##>
-    <##          that can be downloaded here:                                      ##>
-    <##          http://www.microsoft.com/opensource/licenses.mspx#Ms-PL           ##>
-    <##                                                                            ##>
-    <################################################################################>
+    # --- Core mode: validate parameters and check dependencies ---
+    if ($core) {
+        # -core takes precedence over -ps7
+        if ($ps7) {
+            Write-Warning '-ps7 is ignored when -core is specified (Core mode compiles to native .NET executable).'
+            $ps7 = $FALSE
+        }
+        # Warn about parameters without a Core mode implementation and RESET them like
+        # the PS7 mode block does: without the reset -configFile would still write a
+        # .config file (and -winFormsDPIAware would still force -supportOS and thus a
+        # manifest) despite the "Ignoring" warning
+        if ($noConsole) { Write-Warning '-noConsole is not implemented in Core mode, the executable is always a console application. Ignoring -noConsole.'; $noConsole = $FALSE }
+        if ($conHost) { Write-Warning '-conHost is not applicable with -core (the executable always uses its own console). Ignoring -conHost.'; $conHost = $FALSE }
+        if ($credentialGUI) { Write-Warning '-credentialGUI is not implemented in Core mode, credentials are prompted on the console. Ignoring -credentialGUI.'; $credentialGUI = $FALSE }
+        if ($noOutput) { Write-Warning '-noOutput is not implemented in Core mode, all output is passed through unchanged. Ignoring -noOutput.'; $noOutput = $FALSE }
+        if ($noError) { Write-Warning '-noError is not implemented in Core mode, all output is passed through unchanged. Ignoring -noError.'; $noError = $FALSE }
+        if ($exitOnCancel) { Write-Warning '-exitOnCancel is not applicable with -core (input boxes are not used in console mode). Ignoring -exitOnCancel.'; $exitOnCancel = $FALSE }
+        if ($lcid) { Write-Warning "-lcid is not implemented in Core mode, the culture of the process is used. Ignoring -lcid ($lcid)."; $lcid = 0 }
+        if ($STA -or $MTA) { Write-Warning '-STA/-MTA are not applicable with -core (the host always runs the pipeline on an STA thread). Ignoring -STA/-MTA.' }
+        if ($configFile) { Write-Warning '-configFile is not applicable with -core (a .NET Framework config file has no effect on a .NET executable). Ignoring -configFile.'; $configFile = $FALSE }
+        if ($winFormsDPIAware) { Write-Warning '-winFormsDPIAware is not applicable with -core (no .config file is generated). Ignoring -winFormsDPIAware.'; $winFormsDPIAware = $FALSE }
+        if ($prepareDebug) { Write-Warning '-prepareDebug is not implemented in Core mode. Ignoring -prepareDebug.'; $prepareDebug = $FALSE }
+        if ($embedFiles -is [HASHTABLE] -and $embedFiles.Count -gt 0) { Write-Warning '-embedFiles is not implemented in Core mode, no files are embedded. Ignoring -embedFiles.' }
+        # Single-file publishing is enabled by default (Variant C pattern)
+        $coreSingleFile = $TRUE
+        if ($PSBoundParameters.ContainsKey('publishSingleFile') -and -not $publishSingleFile) {
+            $coreSingleFile = $FALSE
+        }
+        # Check .NET SDK availability on the build machine (Runtime alone is not enough:
+        # dotnet --version succeeds with only the runtime installed, but publish fails)
+        try {
+            $dotnetSDKs = & dotnet --list-sdks 2>&1
+            if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace("$dotnetSDKs")) {
+                throw 'No .NET SDK found. dotnet --list-sdks returned no entries.'
+            }
+            # Extract the highest installed SDK version for auto-detection.
+            # Use [regex]::Match on each line: $_ inside ForEach-Object is a plain
+            # string, its .Matches property is null and indexing it throws
+            $sdkVersions = @(
+                foreach ($line in @($dotnetSDKs)) {
+                    $m = [regex]::Match("$line", '^\s*(\d+\.\d+\.\d+)')
+                    if ($m.Success) { $m.Groups[1].Value }
+                }
+            )
+            $dotnetVersion = ($sdkVersions | Sort-Object { [version]$_ } | Select-Object -Last 1)
+            if (-not $dotnetVersion) { throw "Cannot parse .NET SDK version from: $dotnetSDKs" }
+        } catch {
+            $sdkErrorMsg = @'
+Core mode requires the .NET SDK to be installed on the build machine.
+Error: dotnet CLI not found or not working properly.
 
+Please either:
+1. Download and install the .NET SDK from https://dotnet.microsoft.com/download
+2. Or use the default Windows PowerShell mode (without -core)
+
+Details: {0}
+'@
+            Write-Error ($sdkErrorMsg -f $_.Exception.Message)
+            return
+        }
+        # Auto-detect target framework if not specified
+        if (-not $targetFramework) {
+            $targetFramework = Get-CoreLatestTargetFramework -DotnetVersion $dotnetVersion
+            if (-not $targetFramework) {
+                Write-Error "Cannot auto-detect a supported target framework for .NET SDK version '$dotnetVersion'. Please specify -targetFramework explicitly."
+                return
+            }
+        }
+        Write-Output "Core mode: compiling to native .NET executable (target framework: $targetFramework, single file: $coreSingleFile)`n"
+    }
     # --- PS7 mode: warn about and reset incompatible parameters (they are ignored) ---
     if ($ps7) {
         if ($conHost) {
@@ -281,10 +400,6 @@ function Invoke-ps2exe {
         if ($credentialGUI) {
             Write-Warning '-credentialGUI is not applicable with -ps7 (credentials handled by pwsh.exe). Ignoring -credentialGUI.'
             $credentialGUI = $FALSE
-        }
-        if ($UNICODEEncoding) {
-            Write-Warning '-UNICODEEncoding is not applicable with -ps7 (pwsh.exe manages its own encoding). Ignoring -UNICODEEncoding.'
-            $UNICODEEncoding = $FALSE
         }
         if ($noOutput) {
             Write-Warning '-noOutput is not implemented with -ps7 (pwsh.exe output is passed through unchanged). Ignoring -noOutput.'
@@ -317,22 +432,22 @@ function Invoke-ps2exe {
     if ([STRING]::IsNullOrEmpty($inputFile)) {
         Write-Output "Usage:`n"
         Write-Output "Invoke-ps2exe [-inputFile] '<filename>' [[-outputFile] '<filename>']"
-        Write-Output '              [-prepareDebug] [-x86|-x64] [-lcid <id>] [-STA|-MTA] [-noConsole] [-conHost] [-UNICODEEncoding]'
+        Write-Output '              [-prepareDebug] [-x64] [-lcid <id>] [-STA|-MTA] [-noConsole] [-conHost]'
         Write-Output "              [-credentialGUI] [-iconFile '<filename>'] [-title '<title>'] [-description '<description>']"
         Write-Output "              [-company '<company>'] [-product '<product>'] [-copyright '<copyright>'] [-trademark '<trademark>']"
-        Write-Output "              [-version '<version>'] [-configFile] [-noOutput] [-noError] [-noVisualStyles] [-exitOnCancel]"
-        Write-Output '              [-DPIAware] [-winFormsDPIAware] [-requireAdmin] [-supportOS] [-virtualize] [-longPaths]'
+        Write-Output "              [-version '<version>'] [-configFile] [-noOutput] [-noError] [-exitOnCancel]"
+        Write-Output '              [-DPIAware] [-winFormsDPIAware] [-requireAdmin] [-supportOS] [-longPaths]'
         Write-Output "              [-ps7] [-removeAllComments] [-mergeIncludes] [-savePreprocessedScript]`n"
         Write-Output '       inputFile = Powershell script that you want to convert to executable (file has to be UTF8 or UTF16 encoded)'
         Write-Output "      outputFile = destination executable file name or folder, defaults to inputFile with extension '.exe'"
         Write-Output '    prepareDebug = create helpful information for debugging'
-        Write-Output '      x86 or x64 = compile for 32-bit or 64-bit runtime only'
+        Write-Output '            x64 = compatibility parameter, the executable is always compiled for the 64-bit runtime'
         Write-Output '            lcid = location ID for the compiled executable. Current user culture if not specified'
         Write-Output "      STA or MTA = 'Single Thread Apartment' or 'Multi Thread Apartment' mode"
         Write-Output '       noConsole = the resulting executable will be a Windows Forms app without a console window'
         Write-Output '         conHost = force start with conhost as console instead of Windows Terminal (disables redirections)'
         Write-Output '                 = not applicable with -ps7'
-        Write-Output ' UNICODEEncoding = encode output as UNICODE in console mode'
+
         Write-Output '   credentialGUI = use GUI for prompting credentials in console mode'
         Write-Output '        iconFile = icon file name for the compiled executable'
         Write-Output '      embedFiles = files to embed given as hash, will be extracted to key of hash, source file names must be unique'
@@ -347,13 +462,13 @@ function Invoke-ps2exe {
         Write-Output '      configFile = write a config file (<outputfile>.exe.config)'
         Write-Output '        noOutput = the resulting executable will generate no standard output (includes verbose and information channel)'
         Write-Output '         noError = the resulting executable will generate no error output (includes warning and debug channel)'
-        Write-Output '  noVisualStyles = disable visual styles for a generated windows GUI application (only with -noConsole)'
+
         Write-Output '    exitOnCancel = exits program when Cancel or "X" is selected in a Read-Host input box (only with -noConsole)'
         Write-Output '        DPIAware = if display scaling is activated, GUI controls will be scaled if possible'
         Write-Output 'winFormsDPIAware = if display scaling is activated, WinForms use DPI scaling (requires Windows 10 and .Net 4.7 or up)'
         Write-Output '    requireAdmin = if UAC is enabled, compiled executable run only in elevated context (UAC dialog appears if required)'
         Write-Output '       supportOS = use functions of newest Windows versions (execute [Environment]::OSVersion to see the difference)'
-        Write-Output '      virtualize = application virtualization is activated (forcing x86 runtime)'
+
         Write-Output '       longPaths = enable long paths ( > 260 characters) if enabled on OS (works only with Windows 10 or up)'
         Write-Output '            ps7 = generate executable that runs script via pwsh.exe (PowerShell 7+)'
         Write-Output '                 = PowerShell 7+ must be installed on target machine'
@@ -365,11 +480,7 @@ function Invoke-ps2exe {
         return
     }
 
-    # --- Redirect to Windows PowerShell when running under PowerShell Core ---
-    # Compilation via CSharpCodeProvider requires .NET Framework (CodeDom is not
-    # available in pwsh), so even in -ps7 mode the compile step itself runs in
-    # powershell.exe. -ps7 only changes the generated stub: it spawns pwsh.exe at
-    # runtime and needs no SMA / ConsoleHost / System.Core references.
+    # Compilation via CSharpCodeProvider requires .NET Framework (CodeDom is not available in pwsh), so even in -ps7 mode the compile step itself runs in powershell.exe. -ps7 only changes the generated stub: it spawns pwsh.exe at runtime and needs no SMA / ConsoleHost / System.Core references.
     if (!$nested -and ($PSVersionTable.PSEdition -eq 'Core')) {
         # starting Windows Powershell
         $CallParam = ''
@@ -455,18 +566,7 @@ function Invoke-ps2exe {
         Write-Error '-noConsole cannot be combined with -conHost'
         return
     }
-    if ($requireAdmin -and $virtualize) {
-        Write-Error '-requireAdmin cannot be combined with -virtualize'
-        return
-    }
-    if ($supportOS -and $virtualize) {
-        Write-Error '-supportOS cannot be combined with -virtualize'
-        return
-    }
-    if ($longPaths -and $virtualize) {
-        Write-Error '-longPaths cannot be combined with -virtualize'
-        return
-    }
+
     if ($savePreprocessedScript -and !$mergeIncludes -and !$removeAllComments) {
         Write-Warning '-savePreprocessedScript requires -mergeIncludes or -removeAllComments, ignoring -savePreprocessedScript.'
         $savePreprocessedScript = $FALSE
@@ -480,12 +580,12 @@ function Invoke-ps2exe {
             return
         }
     }
-    if (!$CFGFILE -and $longPaths -and !$ps7) {
+    if (!$CFGFILE -and $longPaths -and !$ps7 -and !$core) {
         Write-Warning 'Forcing generation of a config file, since the option -longPaths requires this'
         $CFGFILE = $TRUE
     }
 
-    if (!$CFGFILE -and $winFormsDPIAware -and !$ps7) {
+    if (!$CFGFILE -and $winFormsDPIAware -and !$ps7 -and !$core) {
         Write-Warning 'Forcing generation of a config file, since the option -winFormsDPIAware requires this'
         $CFGFILE = $TRUE
     }
@@ -553,10 +653,7 @@ function Invoke-ps2exe {
     $o = [Activator]::CreateInstance($type)
     $o.Add('CompilerVersion', 'v4.0')
 
-    # ==================================================================
-    # Reference assemblies: PS7 mode needs far fewer references than
-    # the original mode (no SMA, no ConsoleHost, no System.Core)
-    # ==================================================================
+    # Reference assemblies: PS7 mode needs far fewer references than the original mode (no SMA, no ConsoleHost, no System.Core)
     if ($ps7) {
         # --- PS7 stub mode: only need System.dll and WinForms (for -noConsole) ---
         $referenceAssembies = @('System.dll')
@@ -599,8 +696,8 @@ function Invoke-ps2exe {
         }
     }
 
-    $platform = 'anycpu'
-    if ($x64 -and !$x86) { $platform = 'x64' } else { if ($x86 -and !$x64) { $platform = 'x86' } }
+    # x64 is always used, -x64 is kept as a compatibility parameter
+    $platform = 'x64'
 
     $cop = (New-Object Microsoft.CSharp.CSharpCodeProvider($o))
     $cp = New-Object System.CodeDom.Compiler.CompilerParameters($referenceAssembies, $outputFile)
@@ -636,12 +733,7 @@ function Invoke-ps2exe {
         $win32manifest | Set-Content ($outputFile + '.win32manifest') -Encoding UTF8
     }
 
-    if (!$virtualize)
-    { $cp.CompilerOptions = "/platform:$($platform) /target:$( if ($noConsole -or $conHost){'winexe'}else{'exe'}) $($iconFileParam) $($manifestParam)" }
-    else {
-        Write-Output 'Application virtualization is activated, forcing x86 platfom.'
-        $cp.CompilerOptions = "/platform:x86 /target:$( if ($noConsole -or $conHost) { 'winexe' } else { 'exe' } ) /nowin32manifest $($iconFileParam)"
-    }
+    $cp.CompilerOptions = "/platform:$($platform) /target:$( if ($noConsole -or $conHost){'winexe'}else{'exe'}) $($iconFileParam) $($manifestParam)"
 
     $cp.IncludeDebugInformation = $prepareDebug
 
@@ -650,28 +742,17 @@ function Invoke-ps2exe {
     }
 
     Write-Output "Reading input file $inputFile"
-    # Read the script and inject a marker comment after any leading using
-    # statements and param block (statements before them would be a parse
-    # error). At runtime the marker is replaced by assignments for $ScriptRoot,
-    # $PSScriptRoot and $PSCommandPath, or removed in help mode.
+    # Read the script and inject a marker comment after any leading using statements and param block (statements before them would be a parse error). At runtime the marker is replaced by assignments for $ScriptRoot, $PSScriptRoot and $PSCommandPath, or removed in help mode.
     $reader = New-Object System.IO.StreamReader($inputFile, $TRUE)
     $scriptContent = $reader.ReadToEnd()
     $reader.Close()
 
-    # ==================================================================
-    # Preprocessing: merge includes (-mergeIncludes) and/or strip
-    # comments (-removeAllComments). Runs on the raw script text BEFORE
-    # the path-variable marker is injected, so the AST parse below and
-    # the embedded resource both see the final content.
-    # ==================================================================
+    # Preprocessing: merge includes (-mergeIncludes) and/or strip comments (-removeAllComments). Runs on the raw script text BEFORE the path-variable marker is injected, so the AST parse below and the embedded resource both see the final content.
     if ($mergeIncludes -or $removeAllComments) {
-        # Unique placeholder that temporarily replaces the param block of an
-        # included file; substituted with explicit parameter assignments at
-        # every inclusion point (see Convert-ParamBlockToAssignments)
+        # Unique placeholder that temporarily replaces the param block of an included file; substituted with explicit parameter assignments at every inclusion point (see Convert-ParamBlockToAssignments)
         $paramBlockMarker = '@@MERGE_PARAMBLOCK@@'
 
-        # Read a file with BOM detection (UTF-16 LE/BE, UTF-8, ANSI fallback)
-        # so non-ASCII text is not corrupted
+        # Read a file with BOM detection (UTF-16 LE/BE, UTF-8, ANSI fallback) so non-ASCII text is not corrupted
         function Get-FileContentRaw {
             param ( [string] $FilePath )
             $bytes = [System.IO.File]::ReadAllBytes($FilePath)
@@ -698,7 +779,7 @@ function Invoke-ps2exe {
         #     embedded configs/code containing '#' lines are not lost;
         #   * block comments <# ... #> (multi-line and inline) and full-line
         #     '#' comments outside here-strings are removed;
-        #   * #Requires directives are preserved;
+        #   * # Requires directives are preserved;
         #   * result is joined back with CRLF.
         # Note: line-based heuristic, not a full tokenizer; a normal string
         # ending in @" can be misdetected as an opener, which only causes
@@ -726,14 +807,10 @@ function Invoke-ps2exe {
                     $line
                 } elseif ($line -match '^\s*#Requires\b') { $line }
                 elseif ($line -notmatch '^\s*#') {
-                    # code line: strip paired inline block comments, then handle
-                    # a block comment opened at the end of this line
+                    # code line: strip paired inline block comments, then handle a block comment opened at the end of this line
                     $clean = [regex]::Replace($line, '(?s)<#.*?#>', '')
                     if ($clean -match '<#') { $inBlock = $true; $clean = ($clean -split '<#', 2)[0] }
-                    # Strip a trailing '# ...' comment, but only when safe:
-                    # '#' must sit outside any string literal and be preceded by
-                    # whitespace. Anything ambiguous (unbalanced quotes, '#' glued
-                    # to code, backtick escapes we cannot trust) keeps the line as-is.
+                    # Strip a trailing '# ...' comment, but only when safe: '#' must sit outside any string literal and be preceded by whitespace. Anything ambiguous (unbalanced quotes, '#' glued to code, backtick escapes we cannot trust) keeps the line as-is.
                     if (-not $inBlock) {
                         $inS = $false; $inD = $false
                         for ($i = 0; $i -lt $clean.Length; $i++) {
@@ -754,9 +831,7 @@ function Invoke-ps2exe {
             return [string]::Join("`r`n", $filteredLines)
         }
 
-        # Takes a possibly-relative path and resolves it against a base folder
-        # (folder of the including file, or the input file's folder as fallback).
-        # Returns a validated absolute path (or throws if the file does not exist).
+        # Takes a possibly-relative path and resolves it against a base folder (folder of the including file, or the input file's folder as fallback). Returns a validated absolute path (or throws if the file does not exist).
         function Resolve-RelativePath {
             [CmdletBinding()]
             param (
@@ -785,18 +860,13 @@ function Invoke-ps2exe {
             return $resolved
         }
 
-        # Builds explicit '$Param = <value>' assignment lines from the param
-        # block metadata of an included file and the arguments of a dot-source
-        # call. Dot-sourcing with arguments is semantically equal to assigning
-        # each argument to the corresponding parameter variable in the calling
-        # scope, so:
+        # Builds explicit '$Param = <value>' assignment lines from the param block metadata of an included file and the arguments of a dot-source call. Dot-sourcing with arguments is semantically equal to assigning each argument to the corresponding parameter variable in the calling scope, so:
         #   * named argument  -Name <expr>  -> $Name = <expr>
         #   * switch argument -Name         -> $Name = $true
         #   * positional arguments bind to parameters in declaration order
         #   * parameters without an argument fall back to their declared
         #     default expression ($false for switches, $null when no default)
-        # Named arguments may use the unique-prefix form PowerShell supports
-        # (-SkipDep for -SkipDependencyInstall).
+        # Named arguments may use the unique-prefix form PowerShell supports (-SkipDep for -SkipDependencyInstall).
         function Convert-ParamBlockToAssignments {
             param (
                 [System.Collections.Generic.List[hashtable]] $Parameters,
@@ -840,8 +910,7 @@ function Invoke-ps2exe {
                 }
             }
 
-            # Pass 2: positional arguments bind to parameters in declaration order
-            # (switch parameters are skipped, they can never bind a positional argument)
+            # Pass 2: positional arguments bind to parameters in declaration order (switch parameters are skipped, they can never bind a positional argument)
             $posIdx = 0
             foreach ($p in $Parameters) {
                 if ($bound.ContainsKey($p.Name)) { continue }
@@ -860,16 +929,14 @@ function Invoke-ps2exe {
                 }
             }
 
-            # Mandatory parameters without a value would normally prompt at runtime;
-            # in the merged code they silently get the default/null instead
+            # Mandatory parameters without a value would normally prompt at runtime; in the merged code they silently get the default/null instead
             foreach ($p in $Parameters) {
                 if (-not $bound.ContainsKey($p.Name) -and $p.IsMandatory) {
                     Write-Warning "Mandatory parameter '$($p.Name)' is not supplied in dot-source call ($CallContext): the merged code will not prompt and will use the declared default (or null)."
                 }
             }
 
-            # Emit one assignment per parameter: bound value, else declared default,
-            # else $false (switch) / $null
+            # Emit one assignment per parameter: bound value, else declared default, else $false (switch) / $null
             $lines = New-Object System.Collections.Generic.List[string]
             foreach ($p in $Parameters) {
                 if ($bound.ContainsKey($p.Name)) {
@@ -886,9 +953,7 @@ function Invoke-ps2exe {
             return $lines
         }
 
-        # Walks up from a starting path until it finds a folder that has a child
-        # folder called "source". That folder is returned as the project root:
-        # relative include paths like ".\source\inc\x.ps1" are written against it.
+        # Walks up from a starting path until it finds a folder that has a child folder called "source". That folder is returned as the project root: relative include paths like ".\source\inc\x.ps1" are written against it.
         function Get-ProjectRoot {
             param (
                 [Parameter(Mandatory = $true)]
@@ -905,10 +970,7 @@ function Invoke-ps2exe {
             return (Split-Path -Parent $StartPath)
         }
 
-        # Recursively expands every dot-source / call-operator / Import-Module line.
-        # Comment stripping already happened on every loaded file (here-string
-        # bodies are preserved verbatim). The root file keeps its own param block
-        # (the ps2exe path-variable marker is injected after it later).
+        # Recursively expands every dot-source / call-operator / Import-Module line. Comment stripping already happened on every loaded file (here-string bodies are preserved verbatim). The root file keeps its own param block (the ps2exe path-variable marker is injected after it later).
         function Expand-Includes {
             param (
                 [string] $FilePath,                # absolute path of the file to process
@@ -916,7 +978,7 @@ function Invoke-ps2exe {
                 [string] $InputFolder = '',        # folder of the input file (second fallback)
                 [hashtable] $Cache = @{},          # already-expanded files (for speed)
                 [hashtable] $InProgress = @{},     # files currently being expanded (circular-include guard)
-                [hashtable] $Requirements = $null, # accumulator for #requires of all merged files
+                [hashtable] $Requirements = $null, # accumulator for # requires of all merged files
                 [hashtable] $ParamInfo = @{},      # per-file param block metadata (name, default, switch)
                 [switch] $IsRoot                   # top-level source file keeps its own param block
             )
@@ -937,8 +999,7 @@ function Invoke-ps2exe {
                 $Requirements = @{ Version = $null; Others = [System.Collections.Generic.HashSet[string]]::new(); Usings = [System.Collections.Generic.HashSet[string]]::new() }
             }
 
-            # Included files only: replace the script-level attribute lines
-            # ([CmdletBinding()], ...) and the param(...) block with a marker.
+            # Included files only: replace the script-level attribute lines ([CmdletBinding()], ...) and the param(...) block with a marker.
             if (-not $IsRoot) {
                 $tokens = $null; $parseErrors = $null
                 $ast = [System.Management.Automation.Language.Parser]::ParseInput($contentNoComments, [ref]$tokens, [ref]$parseErrors)
@@ -975,7 +1036,10 @@ function Invoke-ps2exe {
             $lines = $contentNoComments -split "`r?`n"
 
             # Include forms: dot-source (.), call operator (&), Import-Module/ipmo
-            $pathGroup = '["'']?((?:"[^"]*"|''[^'']*''|[^\s"'''']+\.(?:ps1|psm1|psd1)))'
+            # The trailing ["'']? swallows the CLOSING quote of a quoted path so it does not leak
+            # into $argText below (a stray quote made every quoted include look like a call with
+            # arguments, and the argument parser then left the line unmerged)
+            $pathGroup = '["'']?((?:"[^"]*"|''[^'']*''|[^\s"'''']+\.(?:ps1|psm1|psd1)))["'']?'
             $dotSourcePattern = '^\s*\.\s+' + $pathGroup
             $callPattern = '^\s*&\s+' + $pathGroup
             $importPattern = '^\s*(?i:(Import-Module|ipmo))\s+' + $pathGroup
@@ -997,9 +1061,7 @@ function Invoke-ps2exe {
                     $outputLines.Add($ln)
                     continue
                 }
-                # Strip a safe trailing '# ...' comment (same conservative scanner
-                # as in Remove-AllComments) so include-detection and argument
-                # parsing never see comment text; ambiguous lines are left intact.
+                # Strip a safe trailing '# ...' comment (same conservative scanner as in Remove-AllComments) so include-detection and argument parsing never see comment text; ambiguous lines are left intact.
                 $inS = $false; $inD = $false
                 for ($i = 0; $i -lt $ln.Length; $i++) {
                     $ch = $ln[$i]
@@ -1012,8 +1074,7 @@ function Invoke-ps2exe {
                         break
                     }
                 }
-                # Collect #requires lines (outside here-strings); removed here and
-                # re-emitted as one consolidated header after the final merge pass.
+                # Collect # requires lines (outside here-strings); removed here and re-emitted as one consolidated header after the final merge pass.
                 if ($ln -match '^\s*#requires\s+(?<body>.+)$') {
                     $reqBody = $Matches['body']
                     if ($reqBody -match '^-Version\s+(?<ver>\S+)') {
@@ -1030,10 +1091,7 @@ function Invoke-ps2exe {
                     }
                     continue
                 }
-                # using statements are only valid at the top of a script: hoist
-                # 'using namespace' lines of included files into the consolidated
-                # header (inlined mid-script they break the parse), drop the other
-                # using forms with a warning
+                # using statements are only valid at the top of a script: hoist 'using namespace' lines of included files into the consolidated header (inlined mid-script they break the parse), drop the other using forms with a warning
                 if (-not $IsRoot -and $ln -match '^\s*using\s+(?<kw>namespace|module|assembly)\b') {
                     if ($Matches['kw'] -ieq 'namespace') {
                         [void]$Requirements['Usings'].Add($ln.Trim())
@@ -1042,9 +1100,7 @@ function Invoke-ps2exe {
                     }
                     continue
                 }
-                # Export-ModuleMember is only valid inside a module: in the merged
-                # single script it would be a runtime error, drop it (the functions
-                # of the inlined module end up in the caller scope anyway)
+                # Export-ModuleMember is only valid inside a module: in the merged single script it would be a runtime error, drop it (the functions of the inlined module end up in the caller scope anyway)
                 if ($ln -match '^\s*Export-ModuleMember\b') {
                     Write-Warning "Export-ModuleMember dropped, it is only valid inside a module (in file $FilePath)."
                     continue
@@ -1053,14 +1109,12 @@ function Invoke-ps2exe {
                 $importKind = $null
                 if ($ln -match $dotSourcePattern) { $rawPath = $Matches[1]; $importKind = 'dot-source' }
                 elseif ($ln -match $callPattern) { $rawPath = $Matches[1]; $importKind = 'call-operator' }
-                elseif ($ln -match $importPattern) { $rawPath = $Matches[1]; $importKind = 'import-module' }
+                elseif ($ln -match $importPattern) { $rawPath = $Matches[2]; $importKind = 'import-module' } # group 1 is the Import-Module command name, group 2 is the path
                 if ($null -ne $rawPath) {
                     $argText = $ln.Substring($Matches[0].Length).Trim()
                     $incDir = Split-Path -Parent $FilePath
                     $rawPath = $rawPath.Replace('$PSScriptRoot', $incDir).Replace('${PSScriptRoot}', $incDir)
-                    # strip surrounding quotes: the .psd1 redirect below matches the
-                    # extension at the end of the raw path and builds its sibling
-                    # candidates from it, both fail while the quotes are attached
+                    # strip surrounding quotes: the .psd1 redirect below matches the extension at the end of the raw path and builds its sibling candidates from it, both fail while the quotes are attached
                     $rawPath = $rawPath.Trim('"').Trim("'")
                     # A .psd1 manifest contributes no code: redirect to the sibling .psm1/.ps1 module file
                     if ($rawPath -imatch '\.psd1$') {
@@ -1075,8 +1129,7 @@ function Invoke-ps2exe {
                             continue
                         }
                     }
-                    # Relative includes: try the including file's folder first, then
-                    # the input file's folder, then the project root
+                    # Relative includes: try the including file's folder first, then the input file's folder, then the project root
                     $includePath = $null
                     $resolveError = $null
                     foreach ($baseDir in @($incDir, $InputFolder, $RootFolder)) {
@@ -1142,36 +1195,28 @@ function Invoke-ps2exe {
 
         if ($mergeIncludes) {
             Write-Output 'Merging includes...'
-            # project root (folder containing the "source" sub-folder): relative
-            # include paths like ".\source\inc\x.ps1" resolve against it
+            # project root (folder containing the "source" sub-folder): relative include paths like ".\source\inc\x.ps1" resolve against it
             $rootFolder = Get-ProjectRoot -StartPath $inputFile
             $inputFolder = Split-Path -Parent $inputFile
             $scriptRequirements = @{ Version = $null; Others = [System.Collections.Generic.HashSet[string]]::new(); Usings = [System.Collections.Generic.HashSet[string]]::new() }
             $paramInfo = @{}
-            # Fail fast like the rest of ps2exe: report via Write-Error and stop
-            # instead of letting a merge exception surface as an unhandled error
+            # Fail fast like the rest of ps2exe: report via Write-Error and stop instead of letting a merge exception surface as an unhandled error
             try {
-                # the cache is created here instead of inside Expand-Includes so it
-                # survives the call: its keys are the complete list of processed
-                # files (root and includes) used for the output reference timestamps
+                # the cache is created here instead of inside Expand-Includes so it survives the call: its keys are the complete list of processed files (root and includes) used for the output reference timestamps
                 $mergeCache = @{}
                 $scriptContent = Expand-Includes -FilePath $inputFile -RootFolder $rootFolder -InputFolder $inputFolder -Cache $mergeCache -IsRoot -Requirements $scriptRequirements -ParamInfo $paramInfo
             } catch {
                 Write-Error "Merging includes failed: $($_.Exception.Message)"
                 return
             }
-            # Final pass to strip the #region / #endregion markers that were
-            # added only for debugging the recursion
+            # Final pass to strip the #region / #endregion markers that were added only for debugging the recursion
             $scriptContent = Remove-AllComments -Content $scriptContent
-            # Safety net: every param-block marker must have been substituted with
-            # assignments by now; a leftover means an internal error.
+            # Safety net: every param-block marker must have been substituted with assignments by now; a leftover means an internal error.
             if ($scriptContent.Contains($paramBlockMarker)) {
                 Write-Error 'Internal error: unreplaced param-block marker left in the merged content.'
                 return
             }
-            # Prepend a single consolidated header: the highest required version among
-            # all merged files, unique non-version requirements, then the hoisted
-            # 'using namespace' lines (using statements must precede all other statements)
+            # Prepend a single consolidated header: the highest required version among all merged files, unique non-version requirements, then the hoisted 'using namespace' lines (using statements must precede all other statements)
             $requiresHeader = New-Object System.Collections.Generic.List[string]
             if ($null -ne $scriptRequirements['Version']) {
                 $requiresHeader.Add('#requires -Version {0}' -f $scriptRequirements['Version'])
@@ -1187,18 +1232,12 @@ function Invoke-ps2exe {
             }
         } else {
             Write-Output 'Removing comments...'
-            # re-read with full encoding detection: the StreamReader above decodes
-            # lenient UTF-8 and would turn invalid sequences into U+FFFD instead
-            # of falling back to ANSI like the merge path does
+            # re-read with full encoding detection: the StreamReader above decodes lenient UTF-8 and would turn invalid sequences into U+FFFD instead of falling back to ANSI like the merge path does
             $scriptContent = Remove-AllComments -Content (Get-FileContentRaw -FilePath $inputFile)
         }
     }
 
-    # --- Reference timestamps for the output files ---
-    # The saved preprocessed script and the executable inherit the file times of
-    # the source script; with -mergeIncludes the newest times among all
-    # processed files win (the merge cache holds every file that was actually
-    # loaded and merged, the input file included)
+    # The saved preprocessed script and the executable inherit the file times of the source script; with -mergeIncludes the newest times among all processed files win (the merge cache holds every file that was actually loaded and merged, the input file included)
     $refCreationTime = $null
     $refLastWriteTime = $null
     $refFiles = @($inputFile)
@@ -1211,9 +1250,7 @@ function Invoke-ps2exe {
         }
     }
 
-    # Optional: save the preprocessed script next to the output executable for
-    # review or standalone re-use. Runs BEFORE the PS2EXE path variable marker
-    # is injected, so the saved file is a valid standalone PowerShell script.
+    # Optional: save the preprocessed script next to the output executable for review or standalone re-use. Runs BEFORE the PS2EXE path variable marker is injected, so the saved file is a valid standalone PowerShell script.
     if ($savePreprocessedScript) {
         $preprocessedFile = [System.IO.Path]::Combine([System.IO.Path]::GetDirectoryName($outputFile), [System.IO.Path]::GetFileNameWithoutExtension($outputFile) + '.ps1')
         if ([STRING]::Equals($preprocessedFile, $inputFile, [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -1237,20 +1274,11 @@ function Invoke-ps2exe {
     }
 
     # --- Syntax check and marker offset ---
-    # Compilation always runs in powershell.exe, so the parser built into this
-    # process is the Windows PowerShell 5.1 one. The script target differs:
-    # - without -ps7 the script executes in-process on .NET Framework: the local
-    #   5.1 parser is authoritative, its errors match the runtime exactly.
-    # - with -ps7 the script executes under pwsh.exe (PowerShell 7+): the parse is
-    #   delegated to a local pwsh.exe. The PS7 parser knows the PS7 syntax and type
-    #   accelerators ([ulong] etc.) and resolves type literals at runtime instead
-    #   of parse time, so no false positives occur and the marker offset is
-    #   computed with the parser that really executes the script (important when
-    #   PS7-only syntax appears inside the param block or in using statements:
-    #   the 5.1 parser may not recognize the param block then and the marker
-    #   would be injected before it, which breaks the script at runtime).
-    # If no pwsh.exe is available on the compile machine, the 5.1 parser is used
-    # as a fallback and "TypeNotFound" errors are filtered out in -ps7 mode.
+    # Compilation always runs in powershell.exe, so the parser built into this process is the Windows PowerShell 5.1 one. The script target differs:
+    # - without -ps7 the script executes in-process on .NET Framework: the local 5.1 parser is authoritative, its errors match the runtime exactly.
+    # - with -ps7 the script executes under pwsh.exe (PowerShell 7+): the parse is delegated to a local pwsh.exe. The PS7 parser knows the PS7 syntax and type accelerators ([ulong] etc.) and resolves type literals at runtime instead of parse time, so no false positives occur and the marker offset is computed with the parser that really executes the script (important when PS7-only syntax appears inside the param block or in using statements:
+    #   the 5.1 parser may not recognize the param block then and the marker would be injected before it, which breaks the script at runtime).
+    # If no pwsh.exe is available on the compile machine, the 5.1 parser is used as a fallback and "TypeNotFound" errors are filtered out in -ps7 mode.
     $parseErrors = @()
     $injectOffset = 0
     $parsedWithPwsh = $FALSE
@@ -1265,19 +1293,12 @@ function Invoke-ps2exe {
         { $pwshExe = "$env:ProgramFiles\PowerShell\7\pwsh.exe" }
 
         if ($pwshExe) {
-            # write the script content to a temp file in UTF8 with BOM: pwsh.exe then
-            # reads the exact same string this process embeds as a resource, so the
-            # offset returned by the PS7 parser is valid for the marker injection
+            # write the script content to a temp file in UTF8 with BOM: pwsh.exe then reads the exact same string this process embeds as a resource, so the offset returned by the PS7 parser is valid for the marker injection
             $parseInputFile = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), 'PS2EXE_parse_' + [System.Guid]::NewGuid().ToString('N') + '.tmp')
             $parseResultFile = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), 'PS2EXE_parse_' + [System.Guid]::NewGuid().ToString('N') + '.json')
             [System.IO.File]::WriteAllText($parseInputFile, $scriptContent, (New-Object System.Text.UTF8Encoding($TRUE)))
 
-            # helper for pwsh.exe: parse the script and write offset and errors as JSON
-            # to a file (a file is used instead of stdout, since the console encodings
-            # of the calling and the called process may differ). The here-string is
-            # single quoted and contains no double quotes, because embedded double
-            # quotes would not survive the native command line of powershell.exe;
-            # paths are inserted via placeholders with doubled single quotes.
+            # helper for pwsh.exe: parse the script and write offset and errors as JSON to a file (a file is used instead of stdout, since the console encodings of the calling and the called process may differ). The here-string is single quoted and contains no double quotes, because embedded double quotes would not survive the native command line of powershell.exe; paths are inserted via placeholders with doubled single quotes.
             $parseHelper = @'
  $path = '%%INPUTFILE%%'
  $resultPath = '%%RESULTFILE%%'
@@ -1355,11 +1376,7 @@ if ($ast) {
         }
     }
 
-    # Insert the marker on its own line. EndOffset points directly after the
-    # last character of the using/param statement, so without a leading newline
-    # the bootstrap statements would end up on the same line as the statement
-    # after replacement (e.g. "using namespace System.IO$ScriptRoot = ..."
-    # does not parse).
+    # Insert the marker on its own line. EndOffset points directly after the last character of the using/param statement, so without a leading newline the bootstrap statements would end up on the same line as the statement after replacement (e.g. "using namespace System.IO$ScriptRoot = ..." does not parse).
     $marker = "# PS2EXE: script path variables`r`n"
     if ($injectOffset -gt 0) { $marker = "`r`n" + $marker }
     $scriptContent = $scriptContent.Insert($injectOffset, $marker)
@@ -1385,9 +1402,7 @@ if ($ast) {
     }
 
     # --- Culture setup ---
-    # $culture: C# statements for the in-process host (PS 5.1 mode).
-    # In PS7 mode the culture statements are inserted at runtime together with
-    # the path variables when the marker in the embedded script is replaced.
+    # $culture: C# statements for the in-process host (PS 5.1 mode). In PS7 mode the culture statements are inserted at runtime together with the path variables when the marker in the embedded script is replaced.
     $culture = ''
     if ($lcid) {
         $culture = @"
@@ -1397,7 +1412,327 @@ System.Threading.Thread.CurrentThread.CurrentUICulture = System.Globalization.Cu
     }
 
     # ==================================================================
-    # C# program template: choose between PS7 stub and original host
+    # CORE MODE TEMPLATES
+    # ==================================================================
+    $Script:CoreMainCsTemplate = @'
+using System;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Management.Automation;
+using System.Management.Automation.Host;
+using System.Management.Automation.Runspaces;
+using System.Reflection;
+using System.Security;
+using System.Threading;
+
+{{AssemblyAttributes}}
+namespace PS2EXE.Core
+{
+    internal static class Program
+    {
+        [STAThread]
+        static int Main(string[] args)
+        {
+            try
+            {
+                var assembly = Assembly.GetExecutingAssembly();
+                var resourceName = "{{ResourcePrefix}}script.ps1";
+                var stream = assembly.GetManifestResourceStream(resourceName);
+                if (stream == null)
+                {
+                    // List the actual resource names so a mismatch is visible immediately
+                    var available = string.Join(", ", assembly.GetManifestResourceNames());
+                    throw new InvalidOperationException(
+                        $"Embedded resource not found: '{resourceName}'. Available resources: {available}");
+                }
+                string script;
+                using (stream)
+                using (var reader = new StreamReader(stream))
+                {
+                    script = reader.ReadToEnd();
+                }
+                return ExecuteScript(script, args);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"Fatal error: {ex.Message}");
+                return 1;
+            }
+        }
+
+        static int ExecuteScript(string script, string[] args)
+        {
+            // AppContext.BaseDirectory works in single-file publish where
+            // Assembly.Location returns an empty string
+            var exeLocation = AppContext.BaseDirectory;
+            // The length check keeps the backslash when the EXE sits in a drive root ("C:\"),
+            // a plain TrimEnd would yield the drive-relative "C:"
+            var scriptRoot = exeLocation.Length > 3 ? exeLocation.TrimEnd('\\') : exeLocation;
+            // The marker comment was injected after any using/param block at compile time;
+            // replacing it with assignments keeps scripts with a param block or using statements
+            // parseable (a prelude prepended to the script would place statements before the
+            // param block and break the parse). Command line arguments are not part of the
+            /// bootstrap: they are parsed below (-Name value / -Name:value / -Name:$TRUE switch
+            // forms go through AddParameter, the rest through AddArgument), so they bind to the
+            // script's param block and the unbound remainder lands in $args automatically.
+            var bootstrap = string.Join("\n", new[]
+            {
+                $"$ScriptRoot = '{scriptRoot.Replace("'", "''")}'",
+                $"$PSScriptRoot = '{scriptRoot.Replace("'", "''")}'",
+                $"$PSCommandPath = '{Path.Combine(exeLocation, "script.ps1").Replace("'", "''")}'"
+            });
+            script = script.Replace("# PS2EXE: script path variables\r\n", bootstrap + "\r\n");
+
+            // Custom PSHost routes Write-Host / Read-Host / prompts to the console;
+            // without it Write-Host goes to a NullUI and is silently dropped
+            var host = new ConsoleHost();
+            var state = InitialSessionState.CreateDefault();
+            using (var runspace = RunspaceFactory.CreateRunspace(host, state))
+            {
+                runspace.Open();
+                // Preset the path variables via the runspace API so they are already visible in
+                // param block default values (the marker replacement executes only after the
+                // param block)
+                runspace.SessionStateProxy.SetVariable("ScriptRoot", scriptRoot);
+                runspace.SessionStateProxy.SetVariable("PSScriptRoot", scriptRoot);
+                runspace.SessionStateProxy.SetVariable("PSCommandPath", Path.Combine(exeLocation, "script.ps1"));
+                using (var powerShell = PowerShell.Create())
+                {
+                    powerShell.Runspace = runspace;
+                    powerShell.AddScript(script);
+                     // Parse the command line the same way as the WinPS host: "-Name value",
+                    // "-Name:value" and "-Name:$TRUE"/"-Name:$FALSE" map to parameters, a bare
+                    // "-Name" maps to a switch, everything else stays positional (AddArgument,
+                    // ends up in $args)
+                    var argRegex = new System.Text.RegularExpressions.Regex("^-([a-zA-Z][a-zA-Z0-9_]*):?(.*)$");
+                    string argBuffer = null;
+                    for (var i = 0; i < args.Length; i++)
+                    {
+                        var argMatch = argRegex.Match(args[i]);
+                        if (argMatch.Success)
+                        {
+                            var paramName = argMatch.Groups[1].Value;
+                            var paramValue = argMatch.Groups[2].Value;
+                            if (paramValue.Length > 0)
+                            {
+                                if (string.Equals(paramValue, "$TRUE", StringComparison.OrdinalIgnoreCase)) { powerShell.AddParameter(paramName, true); }
+                                else if (string.Equals(paramValue, "$FALSE", StringComparison.OrdinalIgnoreCase)) { powerShell.AddParameter(paramName, false); }
+                                else { powerShell.AddParameter(paramName, paramValue); }
+                                argBuffer = null;
+                            }
+                            else
+                            {
+                                if (argBuffer != null) { powerShell.AddParameter(argBuffer); }
+                                argBuffer = paramName;
+                            }
+                        }
+                        else
+                        {
+                            if (argBuffer != null) { powerShell.AddParameter(argBuffer, args[i]); argBuffer = null; }
+                            else { powerShell.AddArgument(args[i]); }
+                        }
+                    }
+                    if (argBuffer != null) { powerShell.AddParameter(argBuffer); }
+                    var results = powerShell.Invoke();
+                    // Pipeline output (Write-Output, bare expressions); interactive
+                    // and host-level output is handled by ConsoleHostUI below
+                    foreach (var item in results)
+                    {
+                        Console.WriteLine(item?.ToString());
+                    }
+                    foreach (var error in powerShell.Streams.Error)
+                    {
+                        Console.Error.WriteLine(error.ToString());
+                    }
+                    // exit N in the script raises SetShouldExit on the host
+                    if (host.ShouldExit) { return host.ExitCode; }
+                    if (powerShell.HadErrors) { return 1; }
+                    return 0;
+                }
+            }
+        }
+    }
+
+    // Minimal PSHost implementation that maps all user interaction to the real
+    // console: this is what makes Write-Host, Read-Host, Write-Error formatting
+    // and progress rendering work like in a normal PowerShell console session
+    internal class ConsoleHost : PSHost
+    {
+        private readonly ConsoleHostUI _ui = new ConsoleHostUI();
+        private readonly Guid _instanceId = Guid.NewGuid();
+        public int ExitCode { get; private set; }
+        public bool ShouldExit { get; private set; }
+        public override CultureInfo CurrentCulture { get { return Thread.CurrentThread.CurrentCulture; } }
+        public override CultureInfo CurrentUICulture { get { return Thread.CurrentThread.CurrentUICulture; } }
+        public override Guid InstanceId { get { return _instanceId; } }
+        public override string Name { get { return "PS2EXEConsoleHost"; } }
+        public override PSHostUserInterface UI { get { return _ui; } }
+        public override Version Version { get { return new Version(1, 0); } }
+        public override void EnterNestedPrompt() { }
+        public override void ExitNestedPrompt() { }
+        public override void NotifyBeginApplication() { }
+        public override void NotifyEndApplication() { }
+        public override void SetShouldExit(int exitCode) { ExitCode = exitCode; ShouldExit = true; }
+    }
+
+    internal class ConsoleHostUI : PSHostUserInterface
+    {
+        private readonly ConsoleHostRawUserInterface _rawUI = new ConsoleHostRawUserInterface();
+        public override PSHostRawUserInterface RawUI { get { return _rawUI; } }
+        public override void Write(string value) { Console.Write(value); }
+        public override void Write(ConsoleColor foregroundColor, ConsoleColor backgroundColor, string value)
+        {
+            var fg = Console.ForegroundColor; var bg = Console.BackgroundColor;
+            try
+            {
+                Console.ForegroundColor = foregroundColor; Console.BackgroundColor = backgroundColor;
+                Console.Write(value);
+            }
+            finally { Console.ForegroundColor = fg; Console.BackgroundColor = bg; }
+        }
+        public override void WriteLine() { Console.WriteLine(); }
+        public override void WriteLine(string value) { Console.WriteLine(value); }
+        public override void WriteErrorLine(string value) { Console.Error.WriteLine(value); }
+        public override void WriteVerboseLine(string message) { Console.WriteLine($"VERBOSE: {message}"); }
+        public override void WriteWarningLine(string message) { Console.WriteLine($"WARNING: {message}"); }
+        public override void WriteDebugLine(string message) { Console.WriteLine($"DEBUG: {message}"); }
+        public override void WriteProgress(long sourceId, ProgressRecord record) { }
+        public override string ReadLine() { return Console.ReadLine() ?? string.Empty; }
+        public override SecureString ReadLineAsSecureString()
+        {
+            var result = new SecureString();
+            foreach (var ch in (Console.ReadLine() ?? string.Empty)) { result.AppendChar(ch); }
+            result.MakeReadOnly();
+            return result;
+        }
+        public override Dictionary<string, PSObject> Prompt(string caption, string message, Collection<FieldDescription> descriptions)
+        {
+            if (!string.IsNullOrEmpty(caption)) { Console.WriteLine(caption); }
+            if (!string.IsNullOrEmpty(message)) { Console.WriteLine(message); }
+            var results = new Dictionary<string, PSObject>();
+            foreach (var field in descriptions)
+            {
+                Console.Write($"{field.Name}: ");
+                results[field.Name] = new PSObject(Console.ReadLine());
+            }
+            return results;
+        }
+        public override int PromptForChoice(string caption, string message, Collection<ChoiceDescription> choices, int defaultChoice)
+        {
+            if (!string.IsNullOrEmpty(caption)) { Console.WriteLine(caption); }
+            if (!string.IsNullOrEmpty(message)) { Console.WriteLine(message); }
+            for (var i = 0; i < choices.Count; i++) { Console.WriteLine($"[{i}] {choices[i].Label}  {choices[i].HelpMessage}"); }
+            while (true)
+            {
+                Console.Write($"Choice[{defaultChoice}]: ");
+                var input = Console.ReadLine();
+                if (string.IsNullOrEmpty(input)) { return defaultChoice; }
+                if (int.TryParse(input, out var idx) && idx >= 0 && idx < choices.Count) { return idx; }
+            }
+        }
+        public override PSCredential PromptForCredential(string caption, string message, string userName, string targetName)
+        {
+            if (!string.IsNullOrEmpty(caption)) { Console.WriteLine(caption); }
+            if (!string.IsNullOrEmpty(message)) { Console.WriteLine(message); }
+            Console.Write($"User[{userName}]: ");
+            var user = Console.ReadLine();
+            if (string.IsNullOrEmpty(user)) { user = userName; }
+            Console.Write("Password: ");
+            return new PSCredential(user, ReadLineAsSecureString());
+        }
+        public override PSCredential PromptForCredential(string caption, string message, string userName, string targetName, PSCredentialTypes allowedCredentialTypes, PSCredentialUIOptions options)
+        {
+            return PromptForCredential(caption, message, userName, targetName);
+        }
+    }
+
+    internal class ConsoleHostRawUserInterface : PSHostRawUserInterface
+    {
+        public override ConsoleColor BackgroundColor { get { return Console.BackgroundColor; } set { Console.BackgroundColor = value; } }
+        public override Size BufferSize { get { return new Size(Console.BufferWidth, Console.BufferHeight); } set { } }
+        public override Coordinates CursorPosition { get { return new Coordinates(Console.CursorLeft, Console.CursorTop); } set { } }
+        public override int CursorSize { get { return Console.CursorSize; } set { } }
+        public override ConsoleColor ForegroundColor { get { return Console.ForegroundColor; } set { Console.ForegroundColor = value; } }
+        public override bool KeyAvailable { get { return Console.KeyAvailable; } }
+        public override Size MaxPhysicalWindowSize { get { return new Size(Console.LargestWindowWidth, Console.LargestWindowHeight); } }
+        public override Size MaxWindowSize { get { return new Size(Console.LargestWindowWidth, Console.LargestWindowHeight); } }
+        public override Coordinates WindowPosition { get { return new Coordinates(0, 0); } set { } }
+        public override Size WindowSize { get { return new Size(Console.WindowWidth, Console.WindowHeight); } set { } }
+        public override string WindowTitle { get { return Console.Title; } set { Console.Title = value; } }
+        public override void FlushInputBuffer() { while (Console.KeyAvailable) { Console.ReadKey(true); } }
+        public override KeyInfo ReadKey(ReadKeyOptions options)
+        {
+            var key = Console.ReadKey((options & ReadKeyOptions.NoEcho) != 0);
+            // ControlKeyStates in the PowerShell SDK has no None member:
+            // start with 0 and OR the pressed modifiers in
+            var states = (ControlKeyStates)0;
+            if (key.Modifiers.HasFlag(ConsoleModifiers.Alt)) { states |= ControlKeyStates.LeftAltPressed; }
+            if (key.Modifiers.HasFlag(ConsoleModifiers.Control)) { states |= ControlKeyStates.LeftCtrlPressed; }
+            if (key.Modifiers.HasFlag(ConsoleModifiers.Shift)) { states |= ControlKeyStates.ShiftPressed; }
+            // KeyInfo ctor signature is (int virtualKeyCode, char ch, ControlKeyStates, bool):
+            // the FIRST argument is the Win32 virtual key code as int, the SECOND
+            // is the character. ConsoleKey enum values match the Win32 VK_* codes,
+            // so an explicit cast to int converts it correctly for position 1
+            return new KeyInfo((int)key.Key, key.KeyChar, states, true);
+        }
+        // Buffer-cell access is not supported by the plain console API:
+        // return empty content and ignore write requests (same approach the
+        // original PS2EXE host uses for non-critical raw UI operations)
+        public override BufferCell[,] GetBufferContents(Rectangle rectangle)
+        {
+            return new BufferCell[rectangle.Bottom - rectangle.Top + 1, rectangle.Right - rectangle.Left + 1];
+        }
+        public override void ScrollBufferContents(Rectangle source, Coordinates destination, Rectangle clip, BufferCell fillCharacter) { }
+        public override void SetBufferContents(Rectangle rectangle, BufferCell fillCharacter) { }
+        public override void SetBufferContents(Coordinates origin, BufferCell[,] contents) { }
+    }
+}
+'@
+
+    $Script:CoreBaseCsprojTemplate = @'
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>{{TargetFramework}}</TargetFramework>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+    <PublishSingleFile>{{PublishSingleFile}}</PublishSingleFile>
+
+    <PublishReadyToRun>{{PublishReadyToRun}}</PublishReadyToRun>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <!-- Suppress the .pdb so publishing does not litter the output folder -->
+         <DebugType>none</DebugType>
+        <!-- All assembly metadata attributes are emitted by the host source template; disable MSBuild auto-generation entirely to avoid CS0579 duplicates -->
+        <GenerateAssemblyTitleAttribute>false</GenerateAssemblyTitleAttribute>
+        <GenerateAssemblyDescriptionAttribute>false</GenerateAssemblyDescriptionAttribute>
+        <GenerateAssemblyConfigurationAttribute>false</GenerateAssemblyConfigurationAttribute>
+        <GenerateAssemblyCompanyAttribute>false</GenerateAssemblyCompanyAttribute>
+        <GenerateAssemblyProductAttribute>false</GenerateAssemblyProductAttribute>
+        <GenerateAssemblyCopyrightAttribute>false</GenerateAssemblyCopyrightAttribute>
+        <GenerateAssemblyVersionAttribute>false</GenerateAssemblyVersionAttribute>
+        <GenerateAssemblyFileVersionAttribute>false</GenerateAssemblyFileVersionAttribute>
+        <GenerateAssemblyInformationalVersionAttribute>false</GenerateAssemblyInformationalVersionAttribute>
+    {{ApplicationIcon}}
+    {{ApplicationManifest}}
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.PowerShell.SDK" Version="{{PSSdkVersion}}" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="{{InputFile}}">
+      <!-- Without LogicalName MSBuild derives the resource name from the directory
+           structure of the source file, which does not match the name the C# host
+           requests. Fix it to a predictable name. -->
+      <LogicalName>{{ResourcePrefix}}script.ps1</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+</Project>
+'@
     # ==================================================================
     if ($ps7) {
         # ==================================================================
@@ -1604,8 +1939,7 @@ namespace PS2EXE_PS7
         [STAThread]
         private static int Main(string[] args)
         {
- $(if (!$noVisualStyles -and $noConsole) { '			Application.EnableVisualStyles();' })
-
+$(if ($noConsole) { ' Application.EnableVisualStyles();' })
             AppDomain.CurrentDomain.UnhandledException += new UnhandledExceptionEventHandler(CurrentDomain_UnhandledException);
 
             // --- Find PowerShell 7+ runtime ---
@@ -1834,9 +2168,7 @@ namespace PS2EXE_PS7
 }
 "@
     } else {
-        # ==================================================================
         # ORIGINAL TEMPLATE (in-process PowerShell host for .NET Framework)
-        # ==================================================================
         $programFrame = @"
 // Simple PowerShell host created by Ingo Karstein (http://blog.karstein-consulting.com)
 // Reworked and GUI support by Markus Scholtes
@@ -2401,7 +2733,7 @@ namespace ModuleNameSpace
         }
     }
 
- $(if ($noConsole){ @"
+ $(if ($noConsole){ @'
     public class Input_Box
     {
         [DllImport("user32.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.Cdecl)]
@@ -2685,12 +3017,10 @@ namespace ModuleNameSpace
         private ConsoleColor ProgressBarColor = ConsoleColor.DarkCyan;
         private string WindowTitle = "";
 
- $(if (!$noVisualStyles) {@'
-        private System.Timers.Timer timer = new System.Timers.Timer();
+         private System.Timers.Timer timer = new System.Timers.Timer();
         private int barNumber = -1;
         private int barValue = -1;
         private bool inTick = false;
-'@ })
 
         struct Progress_Data
         {
@@ -2766,15 +3096,12 @@ namespace ModuleNameSpace
             this.StartPosition = FormStartPosition.CenterScreen;
 
             this.ResumeLayout();
- $(if (!$noVisualStyles) {@'
-            timer.Elapsed += new System.Timers.ElapsedEventHandler(TimeTick);
+             timer.Elapsed += new System.Timers.ElapsedEventHandler(TimeTick);
             timer.Interval = 50;
             timer.AutoReset = true;
             timer.Start();
-'@ })
         }
- $(if (!$noVisualStyles) {@'
-        private void TimeTick(object source, System.Timers.ElapsedEventArgs e)
+         private void TimeTick(object source, System.Timers.ElapsedEventArgs e)
         {
             if (inTick) return;
             inTick = true;
@@ -2789,7 +3116,6 @@ namespace ModuleNameSpace
             }
             inTick = false;
         }
-'@ })
 
         private void AddBar(ref Progress_Data pd, int position)
         {
@@ -2812,11 +3138,7 @@ namespace ModuleNameSpace
 
             pd.objProgressBar = new ProgressBar();
             pd.objProgressBar.Value = 0;
- $(if ($noVisualStyles) {@'
-            pd.objProgressBar.Style = ProgressBarStyle.Continuous;
-'@ } else {@'
-            pd.objProgressBar.Style = ProgressBarStyle.Blocks;
-'@ })
+             pd.objProgressBar.Style = ProgressBarStyle.Blocks;
             pd.objProgressBar.ForeColor = DrawingColor(ProgressBarColor);
             if (pd.Depth < 15)
             {
@@ -2871,9 +3193,7 @@ namespace ModuleNameSpace
             {
                 if (currentProgress >= 0)
                 {
- $(if (!$noVisualStyles) {@'
-                    if (barNumber == currentProgress) barNumber = -1;
-'@ })
+                     if (barNumber == currentProgress) barNumber = -1;
                     this.Controls.Remove(progressDataList[currentProgress].lbActivity);
                     this.Controls.Remove(progressDataList[currentProgress].lbStatus);
                     this.Controls.Remove(progressDataList[currentProgress].objProgressBar);
@@ -2891,10 +3211,8 @@ namespace ModuleNameSpace
 
                 if (progressDataList.Count == 0)
                 {
- $(if (!$noVisualStyles) {@'
-                    timer.Stop();
+                     timer.Stop();
                     timer.Dispose();
-'@ })
                     this.Close();
                     return;
                 }
@@ -3002,35 +3320,26 @@ namespace ModuleNameSpace
 
             if ((objRecord.PercentComplete >= 0) && (objRecord.PercentComplete <= 100))
             {
- $(if (!$noVisualStyles) {@'
-                if (objRecord.PercentComplete < 100)
+                 if (objRecord.PercentComplete < 100)
                     progressDataList[currentProgress].objProgressBar.Value = objRecord.PercentComplete + 1;
                 else
                     progressDataList[currentProgress].objProgressBar.Value = 99;
                 progressDataList[currentProgress].objProgressBar.Visible = true;
                 barNumber = currentProgress;
                 barValue = objRecord.PercentComplete;
-'@ } else {@'
-                progressDataList[currentProgress].objProgressBar.Value = objRecord.PercentComplete;
-                progressDataList[currentProgress].objProgressBar.Visible = true;
-'@ })
             }
             else
             { if (objRecord.PercentComplete > 100)
                 {
                     progressDataList[currentProgress].objProgressBar.Value = 0;
                     progressDataList[currentProgress].objProgressBar.Visible = true;
- $(if (!$noVisualStyles) {@'
-                    barNumber = currentProgress;
+                     barNumber = currentProgress;
                     barValue = 0;
-'@ })
                 }
                 else
                 {
                     progressDataList[currentProgress].objProgressBar.Visible = false;
- $(if (!$noVisualStyles) {@'
-                    if (barNumber == currentProgress) barNumber = -1;
-'@ })
+                     if (barNumber == currentProgress) barNumber = -1;
                 }
             }
 
@@ -3050,7 +3359,7 @@ namespace ModuleNameSpace
             Application.DoEvents();
         }
     }
-"@})
+'@})
 
     internal class MainModuleUI : PSHostUserInterface
     {
@@ -3819,12 +4128,10 @@ namespace ModuleNameSpace
             errorWriter.AutoFlush = true;
             Console.SetError(errorWriter);
 '@ })
- $(if (!$noConsole -and $UNICODEEncoding) {@'
-            Console.OutputEncoding = new System.Text.UnicodeEncoding();
-'@ })
+ 
             $culture
 
-            $(if (!$noVisualStyles -and $noConsole) { 'Application.EnableVisualStyles();' })
+            $(if ($noConsole) { 'Application.EnableVisualStyles();' })
             MainApp me = new MainApp();
 
             bool paramWait = false;
@@ -4102,13 +4409,149 @@ namespace ModuleNameSpace
     }
 
     Write-Output "Compiling file...`n"
-    $cr = $cop.CompileAssemblyFromSource($cp, $programFrame)
+    if ($core) {
+        # --- Core mode: compile via dotnet publish ---
+        # Resolve-Path requires an existing file; use GetFullPath for the not-yet-created output
+        $outputDirectory = [System.IO.Path]::GetDirectoryName([System.IO.Path]::GetFullPath($outputFile))
+        $outputFileName = [System.IO.Path]::GetFileNameWithoutExtension($outputFile)
+    
+        # Create temporary project directory
+        $tempProjectDir = Join-Path $env:TEMP "PS2EXE_Core_$(Get-Random)"
+        New-Item -ItemType Directory -Path $tempProjectDir -Force | Out-Null
+        # Copy icon and manifest into the project directory: dotnet publish has no
+        # /win32icon or /win32manifest command line switches, they are project properties
+        $coreIconProperty = ''
+        if (![STRING]::IsNullOrEmpty($iconFile)) {
+            Copy-Item -LiteralPath $iconFile -Destination (Join-Path $tempProjectDir 'app.icon') -Force
+            $coreIconProperty = '<ApplicationIcon>app.icon</ApplicationIcon>'
+        }
+        $coreManifestProperty = ''
+        if ($requireAdmin -or $DPIAware -or $supportOS -or $longPaths) {
+            Copy-Item -LiteralPath ($outputFile + '.win32manifest') -Destination (Join-Path $tempProjectDir 'app.manifest') -Force
+            $coreManifestProperty = '<ApplicationManifest>app.manifest</ApplicationManifest>'
+        }
+    
+        try {
+            # Generate .cs file from template
+            $programFrame = $Script:CoreMainCsTemplate
+            # Assembly attributes carry the metadata parameters into the Core executable;
+            # without them -title/-version/etc. are silently dropped in Core mode
+            $coreAttributes = New-Object System.Text.StringBuilder
+            [void]$coreAttributes.AppendLine("[assembly: System.Reflection.AssemblyTitle(`"$title`")]")
+            [void]$coreAttributes.AppendLine("[assembly: System.Reflection.AssemblyProduct(`"$product`")]")
+            [void]$coreAttributes.AppendLine("[assembly: System.Reflection.AssemblyCopyright(`"$copyright`")]")
+            [void]$coreAttributes.AppendLine("[assembly: System.Reflection.AssemblyTrademark(`"$trademark`")]")
+            [void]$coreAttributes.AppendLine("[assembly: System.Reflection.AssemblyDescription(`"$description`")]")
+            [void]$coreAttributes.AppendLine("[assembly: System.Reflection.AssemblyCompany(`"$company`")]")
+            if (![STRING]::IsNullOrEmpty($version)) {
+                [void]$coreAttributes.AppendLine("[assembly: System.Reflection.AssemblyVersion(`"$version`")]")
+                [void]$coreAttributes.AppendLine("[assembly: System.Reflection.AssemblyFileVersion(`"$version`")]")
+            }
+            $programFrame = $programFrame.Replace('{{AssemblyAttributes}}', $coreAttributes.ToString())
+            $programFrame = $programFrame.Replace('{{ResourcePrefix}}', "$outputFileName.")
+            $programFrame = Remove-CoreEmptyPlaceholders -Content $programFrame
+        
+            $scriptCsPath = Join-Path $tempProjectDir 'Program.cs'
+            $programFrame | Set-Content -Path $scriptCsPath -Encoding UTF8
+        
+            # Pin the PowerShell SDK package to the release line matching the target
+            # framework: a floating Version="*" resolves to the LATEST package, whose
+            # dependency groups target the newest .NET only, so publishing for an older
+            # -targetFramework fails restore with a package incompatibility error (and
+            # assemblies compiled for a newer .NET would not load on an older runtime
+            # anyway)
+            $psSdkVersion = switch ($targetFramework) {
+                'net6.0' { '7.2.*' }
+                'net7.0' { '7.3.*' }
+                'net8.0' { '7.4.*' }
+                'net9.0' { '7.5.*' }
+                'net10.0' { '7.6.*' }
+                default { '*' }
+            }
+            # Generate .csproj file from template
+            $csProjFile = $Script:CoreBaseCsprojTemplate
+            $csProjFile = $csProjFile -replace '\{\{TargetFramework\}\}', $targetFramework
+            $csProjFile = $csProjFile -replace '\{\{PublishSingleFile\}\}', $coreSingleFile.ToString().ToLower()
+            $csProjFile = $csProjFile -replace '\{\{PublishReadyToRun\}\}', $readyToRun.ToString().ToLower()
+            # Embed the preprocessed script (marker injected, comments stripped, includes merged)
+            # instead of the raw input file, so -removeAllComments/-mergeIncludes take effect in
+            # Core mode too; the path is XML-escaped because it is written into the .csproj XML
+            $csProjFile = $csProjFile.Replace('{{InputFile}}', [System.Security.SecurityElement]::Escape($embeddedScriptFile))
+            $csProjFile = $csProjFile.Replace('{{ResourcePrefix}}', "$outputFileName.")
+            $csProjFile = $csProjFile.Replace('{{ApplicationIcon}}', $coreIconProperty)
+            $csProjFile = $csProjFile.Replace('{{ApplicationManifest}}', $coreManifestProperty)
+            $csProjFile = $csProjFile.Replace('{{PSSdkVersion}}', $psSdkVersion)
+            $csProjFile = Remove-CoreEmptyPlaceholders -Content $csProjFile
+        
+            $csProjPath = Join-Path $tempProjectDir "$outputFileName.csproj"
+            $csProjFile | Set-Content -Path $csProjPath -Encoding UTF8
+        
+            # Run dotnet publish. DOTNET_CLI_UI_LANGUAGE=en keeps compiler messages in English so
+            # localized console code pages cannot garble them; stderr is merged into the output
+            # stream and reported by the error handling below
+            # Build the dotnet publish command line: project file, configuration and output
+            # directory. The runtime identifier is required for single file publish
+            $dotnetArgs = @('publish', $csProjPath, '-c', 'Release', '-o', $outputDirectory)
+            if ($coreSingleFile) {
+                $dotnetArgs += '-r', 'win-x64'
+            }
+            # Splatting an undefined variable silently starts dotnet with NO arguments:
+            # dotnet prints its usage and exits with 0x80008081 (-2147450751). Guard against it
+            if (-not $dotnetArgs -or $dotnetArgs[0] -ne 'publish') { throw 'Internal error: dotnet publish arguments were not built.' }
+            $env:DOTNET_CLI_UI_LANGUAGE = 'en'
+            try {
+                $dotnetOutput = & dotnet @dotnetArgs 2>&1
+            } finally {
+                Remove-Item Env:\DOTNET_CLI_UI_LANGUAGE -ErrorAction SilentlyContinue
+            }        
+            if ($LASTEXITCODE -ne 0) {
+                $errorLines = $dotnetOutput | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] -or $_ -match '(?i)error' }
+                $errorDetail = if ($errorLines) { ($errorLines | Out-String).Trim() } else { ($dotnetOutput | Out-String).Trim() }
+                Write-Error "dotnet publish failed with exit code $LASTEXITCODE.`n$errorDetail"
+                # clean up the temp copy of the embedded script and the manifest before aborting
+                Remove-Item -LiteralPath $embeddedScriptFile -Force -ErrorAction SilentlyContinue
+                Remove-Item -LiteralPath $embedDir -Force -Recurse -ErrorAction SilentlyContinue
+                if (Test-Path -LiteralPath $($outputFile + '.win32manifest')) {
+                    Remove-Item -LiteralPath $($outputFile + '.win32manifest') -Verbose:$FALSE -ErrorAction SilentlyContinue
+                }
+                return
+            }
+        
+            Write-Output "Core compilation successful: $outputFile"
+        
+        } finally {
+            # Cleanup temporary project directory
+            if (Test-Path $tempProjectDir) {
+                Remove-Item -Path $tempProjectDir -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+    } else {
+        $cr = $cop.CompileAssemblyFromSource($cp, $programFrame)
+    }
 
     # remove the temporary copy of the embedded script
     Remove-Item -LiteralPath $embeddedScriptFile -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $embedDir -Force -Recurse -ErrorAction SilentlyContinue
 
-    if ($cr.Errors.HasErrors) {
+    if ($core) {
+        # Core mode: dotnet publish succeeded (failures returned above), there are no CompilerResults to inspect
+        if (Test-Path -LiteralPath $outputFile) {
+            Write-Output "Output file $outputFile written"
+
+            # inherit the reference timestamps (source file, or the newest of all merged files with -mergeIncludes); failures downgrade to a warning, the executable itself is unaffected
+            if ($null -ne $refCreationTime -and $null -ne $refLastWriteTime) {
+                try {
+                    $outItem = Get-Item -LiteralPath $outputFile
+                    $outItem.LastWriteTime = $refLastWriteTime
+                    $outItem.CreationTime = $refCreationTime
+                } catch {
+                    Write-Warning "Could not set file times on '$outputFile': $($_.Exception.Message)"
+                }
+            }
+        } else {
+            Write-Error -ErrorAction 'Continue' "Output file $outputFile not written"
+        }
+    } elseif ($cr.Errors.HasErrors) {
         if (Test-Path -LiteralPath $outputFile) {
             Remove-Item -LiteralPath $outputFile -Verbose:$FALSE
         }
@@ -4118,9 +4561,7 @@ namespace ModuleNameSpace
         if (Test-Path -LiteralPath $outputFile) {
             Write-Output "Output file $outputFile written"
 
-            # inherit the reference timestamps (source file, or the newest of all
-            # merged files with -mergeIncludes); failures downgrade to a warning,
-            # the executable itself is unaffected
+            # inherit the reference timestamps (source file, or the newest of all merged files with -mergeIncludes); failures downgrade to a warning, the executable itself is unaffected
             if ($null -ne $refCreationTime -and $null -ne $refLastWriteTime) {
                 try {
                     $outItem = Get-Item -LiteralPath $outputFile

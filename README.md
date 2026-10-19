@@ -1,15 +1,15 @@
 # PS2EXE
-Rework of the great script of Ingo Karstein with GUI support. The GUI output and input is activated with the `-noConsole` switch, real Windows executables are generated. By default compiles PowerShell 5.x compatible scripts. With `-ps7` a lightweight executable is generated that runs the embedded script via `pwsh.exe` (PowerShell 7+); PowerShell 7+ must be installed on the target machine. With optional graphical front end Win-PS2EXE (a script based WinForms GUI, no dependencies).
+Rework of the great script of Ingo Karstein with GUI support. The GUI output and input is activated with the `-noConsole` switch, real Windows executables are generated. By default compiles PowerShell 5.x compatible scripts. With `-ps7` a lightweight executable is generated that runs the embedded script via `pwsh.exe` (PowerShell 7+); PowerShell 7+ must be installed on the target machine. With `-core` a native .NET executable is compiled using Roslyn compilation (dotnet publish); the .NET SDK is required on the build machine and the matching .NET Runtime on the target machine. With optional graphical front end Win-PS2EXE (a script based WinForms GUI, no dependencies).
 
 Module version.
 
 Original Authors: Ingo Karstein, Markus Scholtes. You find the original script based version here (https://github.com/MScholtes/TechNet-Gallery).
 Fork Author: Andrew Afanasiev
 
-Version: 1.0.21
-(PowerShell 7+ support, include merging, comment stripping and preprocessed script saving)
+Version: 1.0.22
+(PowerShell 7+ support, .NET Core (Roslyn) compilation, include merging, comment stripping and preprocessed script saving)
 
-Date: 2026.10.08
+Date: 2026.10.19
 <img width="944" height="798" alt="image" src="https://github.com/user-attachments/assets/327d495a-389f-4623-a6ea-b2fc887565d9" />
 <img width="943" height="800" alt="image" src="https://github.com/user-attachments/assets/180dfff8-b94e-45df-8c3f-5ca540f623f8" />
 
@@ -33,7 +33,7 @@ or start Win-PS2EXE for a graphical front end with
 ```powershell
   Run_WIN-PS2EXE.cmd
 ```
-The GUI is a WinForms application written in PowerShell 5.1+ (no compiled binary, no dependencies). It runs compilation on a background runspace and shows a report window with all errors and warnings; the report text can be selected and copied. Every parameter and option shows a hover tooltip with its description from the documentation. Parameters not applicable with `-ps7` are dimmed automatically. The last used settings are persisted in `%APPDATA%\ps2exe\Win-PS2EXE.settings.xml`. The "Show command line" button displays the exact `Invoke-ps2exe` call the "Compile" button would run, so it can be copied and reused in scripts or CI.
+The GUI is a WinForms application written in PowerShell 5.1+ (no compiled binary, no dependencies). It runs compilation on a background runspace and shows a report window with all errors and warnings; the report text can be selected and copied. Every parameter and option shows a hover tooltip with its description from the documentation. Parameters not applicable with `-ps7` are dimmed automatically. The last used settings are persisted in `%APPDATA%\ps2exe\Win-PS2EXE.settings.xml`. The "Show command line" button displays the exact `Invoke-ps2exe` call the "Compile" button would run, so it can be copied and reused in scripts or CI. The runtime selector offers Windows PowerShell 5.1, PowerShell 7+ (`-ps7`) and ".NET Core (Roslyn compilation)" (`-core`) with a target framework combo (including Auto-detect), single-file and ReadyToRun checkboxes on the "Core optimizations" tab.
 
 ### Compile a self-contained executable from a multi-file script
 
@@ -50,6 +50,22 @@ To save the result of `-removeAllComments` or `-mergeIncludes` as a `.ps1` file 
 
 ```powershell
 Invoke-ps2exe -inputFile .\MyScript.ps1 -outputFile .\MyScript.exe -mergeIncludes -savePreprocessedScript
+```
+
+### Compile a native .NET executable (Core mode)
+
+```powershell
+Invoke-ps2exe -inputFile .\MyScript.ps1 -outputFile .\MyScriptCore.exe -core
+```
+With `-core` PS2EXE compiles the script to a native .NET executable using Roslyn compilation (`dotnet publish`) instead of embedding it in a .NET Framework stub. The script is embedded as a resource with an explicit LogicalName and executed in-process via the PowerShell SDK using a custom ConsoleHost: `Write-Host`, `Read-Host`, prompts, colors and progress are all routed to the real console. `$ScriptRoot`, `$PSScriptRoot`, `$PSCommandPath` and `$args` are set before the script runs, and the script's exit code is propagated via `SetShouldExit`.
+
+- The .NET SDK must be installed on the build machine, the matching .NET Runtime on the target machine (framework-dependent, Windows x64 only).
+- `-targetFramework` selects the target .NET version (`net6.0` through `net11.0`); when omitted, the latest supported version for the installed .NET SDK is used automatically.
+- `-publishSingleFile` (default: enabled) bundles all managed DLLs into one exe; use `-publishSingleFile:$false` to get a folder with the executable and its dependencies instead.
+- `-readyToRun` pre-compiles the assemblies to ReadyToRun (R2R) format for faster startup at the cost of ~2x file size.
+- `-ps7` and `-core` are mutually exclusive; if both are specified, `-core` takes precedence and `-ps7` is ignored with a warning.
+- The reserved parameters `-?`, `-debug`, `-extract`, `-wait` and `-end` are not evaluated by Core mode executables and are passed to the script as plain arguments. `-noConsole`, `-credentialGUI`, `-noOutput`, `-noError`, `-exitOnCancel`, `-lcid`, `-configFile`, `-winFormsDPIAware`, `-prepareDebug` and `-embedFiles` are not applicable in Core mode and are ignored with a warning.
+- `DOTNET_CLI_UI_LANGUAGE=en` is set during `dotnet publish` so localized compiler messages do not garble; the temporary project directory under `%TEMP%` is cleaned up after each compile.
 
 ### Compile a PowerShell 7+ executable (console mode)
 
@@ -60,7 +76,7 @@ The resulting executable is a lightweight .NET Framework stub that locates `pwsh
 
 - PowerShell 7+ must be installed on the target machine.
 - In console mode `pwsh.exe` inherits the console for interactive input/output.
-- `-conHost`, `-credentialGUI`, `-UNICODEEncoding`, `-noOutput`, `-noError`, `-exitOnCancel`, `-configFile`, `-winFormsDPIAware` and `-STA`/`-MTA` are not applicable with `-ps7` and are ignored with a warning.
+- `-conHost`, `-credentialGUI`, `-noOutput`, `-noError`, `-exitOnCancel`, `-configFile`, `-winFormsDPIAware` and `-STA`/`-MTA` are not applicable with `-ps7` and are ignored with a warning.
 
 ### Compile a PowerShell 7+ GUI executable (no console window)
 
@@ -73,31 +89,31 @@ The resulting executable is a graphical application: stdout and stderr of `pwsh.
 ## Parameter
 ```powershell
 ps2exe [-inputFile] '<file_name>' [[-outputFile] '<file_name>']
-       [-prepareDebug] [-x86|-x64] [-lcid <id>] [-STA|-MTA] [-noConsole] [-conHost] [-UNICODEEncoding]
+       [-prepareDebug] [-lcid <id>] [-STA|-MTA] [-noConsole] [-conHost]
        [-credentialGUI] [-iconFile '<filename>'] [-embedFiles <hashtable>] [-title '<title>'] [-description '<description>']
        [-company '<company>'] [-product '<product>'] [-copyright '<copyright>'] [-trademark '<trademark>']
-       [-version '<version>'] [-configFile] [-noOutput] [-noError] [-noVisualStyles] [-exitOnCancel]
-       [-DPIAware] [-winFormsDPIAware] [-requireAdmin] [-supportOS] [-virtualize] [-longPaths]
-       [-ps7] [-removeAllComments] [-mergeIncludes] [-savePreprocessedScript]
+       [-version '<version>'] [-configFile] [-noOutput] [-noError]
+       [-exitOnCancel] [-DPIAware] [-winFormsDPIAware] [-requireAdmin] [-supportOS] [-longPaths]
+       [-ps7] [-core] [-targetFramework '<framework>'] [-publishSingleFile] [-readyToRun]
+       [-removeAllComments] [-mergeIncludes] [-savePreprocessedScript]
 ```
 
 ```
       inputFile = Powershell script that you want to convert to executable (file has to be UTF8 or UTF16 encoded)
      outputFile = destination executable file name or folder, defaults to inputFile with extension '.exe'
    prepareDebug = create helpful information for debugging
-     x86 or x64 = compile for 32-bit or 64-bit runtime only
            lcid = location ID for the compiled executable. Current user culture if not specified
+                  not applicable with -core
      STA or MTA = 'Single Thread Apartment' or 'Multi Thread Apartment' mode
       noConsole = the resulting executable will be a Windows Forms app without a console window
         conHost = force start with conhost as console instead of Windows Terminal (disables redirections)
                   not applicable with -ps7
-UNICODEEncoding = encode output as UNICODE in console mode
-                  not applicable with -ps7
   credentialGUI = use GUI for prompting credentials in console mode
                   not applicable with -ps7
        iconFile = icon file name for the compiled executable
-     embedFiles = files to embed given as hash, will be extracted to key of hash, source file names must be unique
+     embedFiles = files to embed given as a hash, will be extracted to key of hash, source file names must be unique
                   (e.g. -embedFiles @{'Targetfilepath'='Sourcefilepath'} )
+                  not applicable with -core
           title = title information (displayed in details tab of Windows Explorer's properties dialog)
     description = description information (not displayed, but embedded in executable)
         company = company information (not displayed, but embedded in executable)
@@ -106,28 +122,46 @@ UNICODEEncoding = encode output as UNICODE in console mode
       trademark = trademark information (displayed in details tab of Windows Explorer's properties dialog)
         version = version information (displayed in details tab of Windows Explorer's properties dialog)
      configFile = write config file (<outputfile>.exe.config)
-                  not applicable with -ps7
+                  not applicable with -ps7 or -core
        noOutput = the resulting executable will generate no standard output (includes verbose and information channel)
-                  not applicable with -ps7
+                  not applicable with -ps7 or -core
         noError = the resulting executable will generate no error output (includes warning and debug channel)
-                  not applicable with -ps7
- noVisualStyles = disable visual styles for a generated windows GUI application (only with -noConsole)
+                  not applicable with -ps7 or -core
    exitOnCancel = exits program when Cancel or "X" is selected in a Read-Host input box (only with -noConsole)
-                  not applicable with -ps7
+                  not applicable with -ps7 or -core
        DPIAware = if display scaling is activated, GUI controls will be scaled if possible (only with -noConsole)
 winFormsDPIAware = if display scaling is activated, WinForms use DPI scaling (requires Windows 10 and .Net 4.7 or up)
-                  not applicable with -ps7
+                  not applicable with -ps7 or -core
    requireAdmin = if UAC is enabled, compiled executable run only in elevated context (UAC dialog appears if required)
       supportOS = use functions of newest Windows versions (execute [Environment]::OSVersion to see the difference)
-     virtualize = application virtualization is activated (forcing x86 runtime)
       longPaths = enable long paths ( > 260 characters) if enabled on OS (works only with Windows 10)
            ps7 = generate an executable that runs the embedded script via pwsh.exe (PowerShell 7+)
                  PowerShell 7+ must be installed on the target machine.
                  In console mode pwsh.exe inherits the console for interactive input/output.
                  In GUI mode (-noConsole) output is captured and shown in message boxes.
-                 Not applicable together with -conHost, -credentialGUI, -UNICODEEncoding,
-                 -noOutput, -noError, -exitOnCancel, -configFile, -winFormsDPIAware and
-                 -STA/-MTA (those parameters are ignored with a warning).
+                 Not applicable together with -conHost, -credentialGUI, -noOutput, -noError,
+                 -exitOnCancel, -configFile, -winFormsDPIAware and -STA/-MTA (those parameters
+                 are ignored with a warning). Mutually exclusive with -core (if both are
+                 specified, -core takes precedence and -ps7 is ignored with a warning).
+          core = compile the script to a native .NET executable using the dotnet CLI (Roslyn
+                 compilation) instead of embedding it in a .NET Framework stub. Requires the
+                 .NET SDK on the build machine; the target machine needs the matching .NET
+                 Runtime. Framework-dependent, Windows x64 only.
+                 The reserved parameters -?, -debug, -extract, -wait and -end are not evaluated
+                 by Core mode executables and are passed to the script as plain arguments.
+                 -noConsole, -credentialGUI, -noOutput, -noError, -exitOnCancel, -lcid,
+                 -configFile, -winFormsDPIAware, -prepareDebug and -embedFiles are not
+                 applicable in Core mode and are ignored with a warning.
+ targetFramework = target .NET framework version for Core mode: net6.0, net7.0, net8.0,
+                 net9.0, net10.0 or net11.0. If not specified, the latest supported version
+                 for the installed .NET SDK is used automatically. Only applicable with -core.
+publishSingleFile = publish the Core mode executable as a single self-contained file (default:
+                 enabled). All managed DLLs are bundled into one exe. Use
+                 -publishSingleFile:$false to disable and get a folder with the executable and
+                 its dependencies instead. Only applicable with -core.
+     readyToRun = pre-compile Core mode assemblies to ReadyToRun (R2R) format for faster
+                 startup. Trades slightly larger file size for improved launch performance.
+                 Only applicable with -core.
 removeAllComments = strip all # line comments, <# #> block comments and #region/#endregion
                  markers from the input script before embedding (here-string bodies are
                  kept verbatim, #requires directives are preserved).
@@ -155,6 +189,8 @@ savePreprocessedScript = save the preprocessed script (result of -removeAllComme
                  neither -removeAllComments nor -mergeIncludes is specified.
 ```
 
+Note: the obsolete parameters `-x86`, `-x64`, `-noVisualStyles`, `-virtualize` and `-UNICODEEncoding` were removed in v1.0.22. The executable is always compiled for the 64-bit runtime (x64), visual styles are always enabled for GUI applications, UAC virtualization is deprecated by Microsoft and the console output encoding is not modified.
+
 A generated executable has the following reserved parameters:
 
 ```
@@ -168,13 +204,22 @@ A generated executable has the following reserved parameters:
                     All preceding options are used by the executable itself and will not be passed to the script.
 ```
 
+Note: in Core mode (`-core`) the reserved parameters `-?`, `-debug`, `-extract`, `-wait` and `-end` are not evaluated and are passed to the script as plain arguments.
+
 
 ## Remarks
 
 ### Use of Powershell Core:
 PS2EXE can be used with Powershell Core. To do so just install the module PS2EXE in Powershell Core as described above. Since .NET Core does not ship with a compiler, the .NET Framework compiler is used (both .NET Framework and PowerShell 5.1 are included in Windows).
 
-**Without `-ps7` PS2EXE can only compile PowerShell 5.1 compatible scripts and generates .NET 4.x binaries, but can still be used directly on every supported Windows OS without dependencies.**
+**Without `-ps7` and `-core` PS2EXE can only compile PowerShell 5.1 compatible scripts and generates .NET 4.x binaries, but can still be used directly on every supported Windows OS without dependencies.**
+
+**With `-core`** PS2EXE compiles the script to a native .NET executable using Roslyn compilation (`dotnet publish`):
+1. The .NET SDK must be installed on the build machine, the matching .NET Runtime on the target machine (framework-dependent, Windows x64 only).
+2. The script is embedded as a resource with an explicit LogicalName and executed in-process via the PowerShell SDK with a custom ConsoleHost (`Write-Host`, `Read-Host`, prompts, colors and progress routed to the real console).
+3. `$ScriptRoot`, `$PSScriptRoot`, `$PSCommandPath` and `$args` are set before the script runs, the exit code is propagated via `SetShouldExit`.
+4. `-targetFramework` selects the .NET version (`net6.0` through `net11.0`, auto-detected from the installed .NET SDK when omitted); `-publishSingleFile` bundles all DLLs into one exe (default, disable with `-publishSingleFile:$false`); `-readyToRun` pre-compiles to R2R format for faster startup at the cost of ~2x file size.
+5. `-ps7` and `-core` are mutually exclusive; if both are specified, `-core` takes precedence and `-ps7` is ignored with a warning. The reserved parameters `-?`, `-debug`, `-extract`, `-wait` and `-end` are not evaluated by Core mode executables and are passed to the script as plain arguments; `-noConsole`, `-credentialGUI`, `-noOutput`, `-noError`, `-exitOnCancel`, `-lcid`, `-configFile`, `-winFormsDPIAware`, `-prepareDebug` and `-embedFiles` are not applicable and are ignored with a warning.
 
 **With `-ps7`** PS2EXE generates a lightweight .NET Framework stub executable that:
 1. Locates `pwsh.exe` (PowerShell 7+) via registry or well-known paths.
@@ -183,14 +228,14 @@ PS2EXE can be used with Powershell Core. To do so just install the module PS2EXE
 4. In console mode inherits the console for interactive input/output; in GUI mode (`-noConsole`) captures output and shows it in message boxes.
 5. Cleans up the temporary file and returns the exit code of `pwsh.exe`.
 
-PowerShell 7+ must be installed on the target machine. `-conHost`, `-credentialGUI`, `-UNICODEEncoding`, `-noOutput`, `-noError`, `-exitOnCancel`, `-configFile`, `-winFormsDPIAware` and `-STA`/`-MTA` are not applicable with `-ps7` and are ignored with a warning.
+PowerShell 7+ must be installed on the target machine. `-conHost`, `-credentialGUI`, `-noOutput`, `-noError`, `-exitOnCancel`, `-configFile`, `-winFormsDPIAware` and `-STA`/`-MTA` are not applicable with `-ps7` and are ignored with a warning.
 
 ### Embedding files in compiled executables:
 With the parameter *-embedFiles* followed by a hash table with paths to files those files will be embedded in the compiled executable.
 At startup of the executable those files will be written to disk to the specified paths, e.g. *-embedFiles @{'Targetfilepath1'='Sourcefilepath1';'Targetfilepath2'='Sourcefilepath2'}*.
 Source file names must be unique. Absolute and relative paths are allowed. For target paths a relative path beginning with *'.\\'* is interpreted as relative to the executable, without the leading *'.\\'* as relative to the current path at runtime.
 Directories are created automaticly on startup if necessary. In the target path environment variables in cmd.exe notation like *%TEMP%* or *%APPDATA%* are expanded at runtime.
-A failure in creating one of the embedded files will stop the execution of the compiled executable immediately.
+A failure in creating one of the embedded files will stop the execution of the compiled executable immediately. Not applicable in Core mode (`-core`), where `-embedFiles` is ignored with a warning.
 
 ### List of cmdlets not implemented:
 The basic input/output commands had to be rewritten in C# for PS2EXE. Not implemented are *Write-Progress* in console mode (too much work) and *Start-Transcript*/*Stop-Transcript* (no proper reference implementation by Microsoft).
@@ -219,7 +264,7 @@ The generated executable (and the preprocessed script saved with -savePreprocess
 ### Script variables:
 Since PS2EXE converts a script to an executable, script related variables are not available anymore. The variable $MyInvocation is set to other values than in a script.
 
-Since v1.0.18 the variables $ScriptRoot, $PSScriptRoot and $PSCommandPath are set by PS2EXE in both PS 5.1 and PS7 modes and point to the location of the executable (in PS7 mode they are set in the wrapper script before user code runs; in PS 5.1 mode they are preset before the script runs, so they are visible in param block default values as well).
+Since v1.0.18 the variables $ScriptRoot, $PSScriptRoot and $PSCommandPath are set by PS2EXE in both PS 5.1 and PS7 modes and point to the location of the executable (in PS7 mode they are set in the wrapper script before user code runs; in PS 5.1 mode they are preset before the script runs, so they are visible in param block default values as well). In Core mode the same variables (plus $args) are set by the host before the script runs.
 
 When -mergeIncludes was used, $PSScriptRoot, $PSCommandPath and $ScriptRoot inside included code (including param block default values) resolve to the location of the compiled executable, not to the original folders of the included files.
 
@@ -245,8 +290,31 @@ $Host.UI.RawUI.FlushInputBuffer()
 ```
 
 ## Changes:
+### 1.0.22 / 2026-10-19
++ New parameter -core: compiles to a native .NET executable using Roslyn compilation (dotnet publish) instead of embedding the script in a .NET Framework stub. Requires the .NET SDK on the build machine, the matching .NET Runtime on the target machine. Framework-dependent, Windows x64 only.
++ New parameter -targetFramework: target .NET framework version for Core mode (net6.0 through net11.0). Auto-detected from the installed .NET SDK when omitted.
++ New parameter -publishSingleFile: publish the Core mode executable as a single file (default: enabled). Use -publishSingleFile:$false to get a folder with dependencies.
++ New parameter -readyToRun: pre-compile Core mode assemblies to ReadyToRun (R2R) format for faster startup at the cost of ~2x file size.
++ Win-PS2EXE: new ".NET Core (Roslyn compilation)" runtime option with target framework combo (including Auto-detect), single-file and ReadyToRun checkboxes, "Core optimizations" tab.
++ Core mode host: embedded resource with explicit LogicalName, in-process PowerShell SDK execution via custom ConsoleHost (Write-Host, Read-Host, prompts, colors and progress all routed to the real console), $ScriptRoot/$PSScriptRoot/$PSCommandPath/$args set before the script runs, exit code propagation via SetShouldExit.
++ Compilation output: DOTNET_CLI_UI_LANGUAGE=en set during dotnet publish so localized compiler messages do not garble; temporary project directory under %TEMP% cleaned up after each compile.
+- Removed obsolete parameters: -x86, -x64, -noVisualStyles, -virtualize, -UNICODEEncoding. Architecture is fixed to x64, visual styles are always on, UAC virtualization is deprecated by Microsoft.
+- Win-PS2EXE: removed the architecture radio group (AnyCPU/x86/x64), the noVisualStyles, virtualize and UNICODEEncoding checkboxes; adjusted layout to accommodate the Core parameters panel.
+- Fixed "Access denied" on intermediate files when TEMP/TMP point to another user's temp dir (runas, scheduled tasks, remote execution): the temp dir is probed before use and switched to the output directory if not writable.
+- PS7 mode: syntax check and marker-offset parsing now use the PS7 parser via local pwsh.exe (avoids false positives like [ulong]); fallback to the 5.1 parser with "TypeNotFound" errors filtered out if pwsh.exe is not found.
+- Output file timestamps: the generated executable and the saved preprocessed script inherit the creation and modification times of the source script; with -mergeIncludes the newest creation and modification times among all processed files (source and includes) are used.
+- New -savePreprocessedScript switch: saves the preprocessed script (result of -removeAllComments or -mergeIncludes) as a .ps1 file next to the output executable, before the PS2EXE path variable marker is injected (so the file stays a valid standalone PowerShell script). Ignored with a warning when no preprocessing switch is set.
+- New -removeAllComments switch: strips all # line comments, <# #> block comments and #region/#endregion markers from the input script before embedding (here-string bodies are kept verbatim, #requires directives are preserved). Note: a script extracted with -extract:<FILENAME> will not match the original input file when preprocessing is active.
+- New -mergeIncludes switch: recursively inlines every dot-sourced, call-operator (&) or Import-Module file reference into one self-contained script before embedding. Include paths are resolved relative to the including file first, then to the folder of the input file. Param blocks of included files are converted to explicit parameter assignments at every inclusion point, all #requires lines are merged into one consolidated header. Implies -removeAllComments. Merge failures are reported via Write-Error and abort compilation.
+- PS7 mode: the execution policy is passed to pwsh.exe via the documented PSExecutionPolicyPreference environment variable instead of a literal "-ExecutionPolicy Bypass" command line argument, and the temporary wrapper script gets a deterministic name (executable name plus process id) instead of a random GUID. Both changes remove static indicators that made antivirus heuristics classify the generated stub as "obfuscated code".
+- Fixed -extract so the extracted file matches the original input script (the injected "# PS2EXE: script path variables" marker comment is removed, both in PS 5.1 and in PS 7 mode).
+- Fixed PS 5.1 mode: $PSScriptRoot and $PSCommandPath are preset via the runspace API before script execution, so they are already visible in param block default values.
+- Fixed PS7 console mode: Ctrl+C no longer leaks the temporary wrapper script. The stub cancels the console event, waits for pwsh.exe to terminate by itself, then deletes the temp script and forwards the exit code.
+- PS7 mode: -winFormsDPIAware is ignored with a warning like the other parameters not applicable with -ps7 (no .config file is generated for the stub).
+
 ### 1.0.21 / 2026-10-15
-+ PS7 mode: the compile-time syntax check now parses the script with the PowerShell 7 parser by delegating to a local pwsh.exe, so the check matches the runtime that will execute the script. 
++ PS7 mode: the compile-time syntax check now parses the script with the PowerShell 7 parser by delegating to a local pwsh.exe, so the check matches the runtime that will execute the script.
+
 ### 1.0.20 / 2026-10-08
 - new parameter -removeAllComments: strips all # line comments, <# #> block comments and #region/#endregion markers from the input script before embedding (here-string bodies kept verbatim, #requires directives preserved); scripts extracted with -extract will not match the original input file when preprocessing is active; comment-based help blocks are stripped as well, so -? of the compiled executable shows no help text with preprocessing active
 - new parameter -mergeIncludes: recursively inlines every dot-sourced, call-operator (&) or Import-Module file reference into one self-contained script before embedding; include paths are resolved relative to the including file first, then to the folder of the input file, then to the project root (nearest parent folder containing a "source" sub-folder); a .psd1 manifest is redirected to its sibling .psm1/.ps1 module file; param blocks of included files are converted to explicit parameter assignments at every inclusion point (switch parameters never bind positional arguments), all #requires lines are merged into one consolidated header, "using namespace" lines of included files are hoisted into it while other using forms and Export-ModuleMember calls are dropped with a warning; implies -removeAllComments; merge failures are reported via Write-Error and abort compilation; note that $PSScriptRoot, $PSCommandPath and $ScriptRoot inside included code (including param block defaults) resolve to the executable location after merging
