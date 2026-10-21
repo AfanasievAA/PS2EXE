@@ -10,8 +10,8 @@ Version: 1.0.22
 (PowerShell 7+ support, .NET Core (Roslyn) compilation, include merging, comment stripping and preprocessed script saving)
 
 Date: 2026.10.19
-<img width="944" height="798" alt="image" src="https://github.com/user-attachments/assets/327d495a-389f-4623-a6ea-b2fc887565d9" />
-<img width="943" height="800" alt="image" src="https://github.com/user-attachments/assets/180dfff8-b94e-45df-8c3f-5ca540f623f8" />
+<img width="930" height="894" alt="image" src="https://github.com/user-attachments/assets/c839211c-c640-44ba-b52f-da755b00f33e" />
+<img width="931" height="897" alt="image" src="https://github.com/user-attachments/assets/235c0d5c-cc0c-49da-8ca5-2f40a96ff91d" />
 
 
 
